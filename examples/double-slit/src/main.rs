@@ -6,7 +6,8 @@
 //! be, from the path difference between the slits (half-integer numbers of
 //! wavelengths). Waves reaching the box edges are absorbed.
 //!
-//! Settings: `color=phase` (hue shows the phase), `steps` (steps of 0.005
+//! Settings: `color=phase` (hue shows the phase), `n` (grid side, default
+//! 1024 natively and 512 in the browser), `steps` (steps of 0.005
 //! per frame, default 2).
 //! Controls: Space to pause, R to restart.
 //!
@@ -14,6 +15,7 @@
 //! `cargo run --release -p double-slit -- record=renders/double-slit seconds=19`
 
 use std::f64::consts::TAU;
+use std::sync::OnceLock;
 
 use bytemuck::{Pod, Zeroable};
 use virial::{Config, Context, Frame, Gpu, KeyCode, Scene, arg, wgpu};
@@ -21,7 +23,21 @@ use virial_quantum::{Absorber, Measurement, Settings, Time, Wave};
 use virial_render::{COLORMAPS_WGSL, Colormap, Overlay};
 use wgpu::util::DeviceExt;
 
-const N: u32 = 1024;
+/// Grid cells per side: the setting `n` (a power of two from 256 to 2048).
+/// 1024 natively, 512 in the browser so it keeps a smooth frame rate.
+fn grid() -> u32 {
+    static N: OnceLock<u32> = OnceLock::new();
+    *N.get_or_init(|| {
+        let default = if cfg!(target_arch = "wasm32") {
+            512
+        } else {
+            1024
+        };
+        arg::<u32>("n", default)
+            .clamp(256, 2048)
+            .next_power_of_two()
+    })
+}
 const LENGTH: f64 = 80.0;
 const DT: f64 = 0.005;
 const K0: f64 = 5.0;
@@ -41,7 +57,7 @@ const VIEW_SIDE: f64 = 50.0;
 
 fn settings() -> Settings {
     Settings {
-        n: N,
+        n: grid(),
         length: LENGTH,
         dt: DT,
         time: Time::Real,
@@ -171,7 +187,11 @@ impl DoubleSlit {
                 "Double slit: wavelength {:.3}, slits {SLIT} wide, {SEPARATION} apart",
                 TAU / K0
             ),
-            format!("t = {:.2}   (hbar = m = 1, {N}^2 grid)", self.wave.time()),
+            format!(
+                "t = {:.2}   (hbar = m = 1, {}^2 grid)",
+                self.wave.time(),
+                grid()
+            ),
         ];
         if let Some(m) = self.latest {
             // Energy per unit probability means nothing once it has all gone
@@ -204,11 +224,11 @@ impl Scene for DoubleSlit {
     fn new(gpu: &Gpu) -> Self {
         let device = &gpu.device;
         let wave = Wave::new(device, &gpu.queue, settings(), packet, potential);
-        let dx = LENGTH / N as f64;
-        let walls: Vec<f32> = (0..N * N)
+        let dx = LENGTH / grid() as f64;
+        let walls: Vec<f32> = (0..grid() * grid())
             .map(|c| {
-                let (i, j) = ((c % N) as f64, (c / N) as f64);
-                let half = (N / 2) as f64;
+                let (i, j) = ((c % grid()) as f64, (c / grid()) as f64);
+                let half = (grid() / 2) as f64;
                 potential((i - half) * dx, (j - half) * dx) as f32
             })
             .collect();
@@ -287,7 +307,7 @@ impl Scene for DoubleSlit {
     fn update(&mut self, ctx: &mut Context<'_>) {
         if self.frames == 0 && ctx.data.is_recording() {
             let data = &mut *ctx.data;
-            data.meta("grid", N);
+            data.meta("grid", grid());
             data.meta("box_length", LENGTH);
             data.meta("dt", DT);
             data.meta("steps_per_frame", self.steps_per_frame);
@@ -344,7 +364,7 @@ impl Scene for DoubleSlit {
                 VIEW_X as f32,
                 (VIEW_SIDE / 2.0) as f32,
                 VIEW_SIDE as f32,
-                (LENGTH / N as f64) as f32,
+                (LENGTH / grid() as f64) as f32,
             ],
             misc: [
                 self.wave.detector_x().unwrap_or(SCREEN) as f32,
@@ -352,7 +372,7 @@ impl Scene for DoubleSlit {
                 2e-4,
                 0.012,
             ],
-            n: N,
+            n: grid(),
             mode: self.phase as u32,
             _pad: [0; 2],
         };
@@ -407,13 +427,16 @@ impl Scene for DoubleSlit {
             }
         }
         let text = |s: &str| s.to_string();
-        let lines = self.readouts();
-        self.overlay.lines(
-            image[0] + 12.0 * scale,
-            image[1] + 12.0 * scale,
-            scale,
-            &lines,
-        );
+        // In the browser the stats panel shows these already
+        if !cfg!(target_arch = "wasm32") {
+            let lines = self.readouts();
+            self.overlay.lines(
+                image[0] + 12.0 * scale,
+                image[1] + 12.0 * scale,
+                scale,
+                &lines,
+            );
+        }
         let note_y = graph[1] + graph[3] - 40.0 * scale;
         for (k, line) in [
             text("Screen: current through x = 20,"),
@@ -465,7 +488,8 @@ impl Scene for DoubleSlit {
             .iter()
             .flat_map(|p| [p[0] as f64, p[1] as f64])
             .collect();
-        ctx.data.snapshot("psi", &[N as usize, N as usize, 2], &psi);
+        ctx.data
+            .snapshot("psi", &[grid() as usize, grid() as usize, 2], &psi);
     }
 }
 
