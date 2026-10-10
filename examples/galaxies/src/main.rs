@@ -32,9 +32,11 @@ const DT: f64 = 0.0025;
 const CORE_MASS: f64 = 1.0;
 /// Each disk's mass, shared by its stars
 const DISK_MASS: f64 = 0.15;
-/// Frames between energy measurements in the live preview. Each costs about
-/// ten force passes, so the preview pauses briefly when one runs.
-const MEASURE_EVERY: u64 = 300;
+/// Frames between the starts of energy measurements in the live preview.
+/// Each is spread over frames, two chunks of 1024 bodies per frame, so the
+/// preview never pauses.
+const MEASURE_EVERY: u64 = 60;
+const MEASURE_CHUNKS_PER_FRAME: u32 = 2;
 /// Frames between measurements when recording, where time doesn't matter
 const MEASURE_EVERY_RECORDING: u64 = 30;
 
@@ -310,12 +312,11 @@ impl Scene for Galaxies {
             *elapsed = 0.0;
             *steps = self.sim.steps();
         }
-        for line in self.readouts() {
-            if let Some((label, value)) = line.split_once(": ") {
-                ctx.stats.set(label, value);
-            } else {
-                ctx.stats.set("Run", line);
-            }
+        for (label, line) in ["Scene", "Clock", "Energy", "Momentum"]
+            .iter()
+            .zip(self.readouts())
+        {
+            ctx.stats.set(label, line);
         }
         ctx.stats.set("Controls", "drag · scroll · Space · R · [ ]");
         ctx.stats
@@ -330,8 +331,14 @@ impl Scene for Galaxies {
                 frame.timer.and_then(|t| t.compute("gravity")),
             );
         }
-        if self.frames.is_multiple_of(self.measure_every) {
-            self.sim.measure(frame.encoder);
+        if ctx.data.is_recording() {
+            // Time doesn't matter when recording: measure completely
+            if self.frames.is_multiple_of(self.measure_every) {
+                self.sim.measure(frame.encoder);
+            }
+        } else if self.sim.is_measuring() || self.frames.is_multiple_of(self.measure_every) {
+            self.sim
+                .measure_gradually(frame.encoder, MEASURE_CHUNKS_PER_FRAME);
         }
         self.frames += 1;
 

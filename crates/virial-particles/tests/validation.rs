@@ -237,3 +237,43 @@ fn kepler_orbit_over_a_million_steps() {
     );
     assert!(drift(&energies) < 1e-6, "drift {:e}", drift(&energies));
 }
+
+#[test]
+fn gradual_measurement_equals_a_complete_one() {
+    let Some(gpu) = gpu() else { return };
+    let bodies = cloud(5000);
+    let gravity = Gravity {
+        g: 1.0,
+        softening: 0.01,
+    };
+    let mut whole = NBody::new(&gpu.device, &gpu.queue, &bodies, gravity, 1e-3);
+    whole.run(50);
+    let expected = whole.measure_now();
+
+    // The same run, measured one chunk per submission while stepping on
+    let mut spread = NBody::new(&gpu.device, &gpu.queue, &bodies, gravity, 1e-3);
+    spread.run(50);
+    let mut submissions = 0;
+    loop {
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        spread.measure_gradually(&mut encoder, 1);
+        spread.step(&mut encoder, 3, None);
+        gpu.queue.submit([encoder.finish()]);
+        spread.after_submit();
+        submissions += 1;
+        if !spread.is_measuring() {
+            break;
+        }
+    }
+    gpu.wait();
+    let got = spread.poll().pop().expect("the measurement finished");
+    println!(
+        "measured over {submissions} submissions while stepping: step {}, energy {:.15e}",
+        got.step,
+        got.energy()
+    );
+    assert_eq!(submissions, 5, "5000 bodies are five chunks of 1024");
+    assert_eq!(got.step, expected.step);
+    assert_eq!(got.kinetic.to_bits(), expected.kinetic.to_bits());
+    assert_eq!(got.potential.to_bits(), expected.potential.to_bits());
+}

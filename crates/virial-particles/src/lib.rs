@@ -75,6 +75,10 @@ struct Params {
 /// Bodies per tile, which is also the workgroup size of every gravity kernel
 const WORKGROUP: u32 = 256;
 const FIXED_SLOTS: u64 = 8;
+/// Words in the accumulator buffer: 8 two-word slots, then the measurement cursor
+const FIXED_WORDS: u64 = 20;
+/// Bodies per measurement chunk (MEASURE_CHUNK in gravity.wgsl)
+const MEASURE_CHUNK: u32 = 1024;
 const READBACK_RING: usize = 3;
 
 struct Readback {
@@ -101,10 +105,17 @@ pub struct NBody {
     vel_lo: wgpu::Buffer,
     fixed: wgpu::Buffer,
     group: wgpu::BindGroup,
+    /// The same bindings with positions and velocities replaced by the
+    /// snapshot being measured
+    snapshot_group: wgpu::BindGroup,
+    snapshot: [wgpu::Buffer; 4],
     drift: wgpu::ComputePipeline,
     prime: wgpu::ComputePipeline,
     force_kick: wgpu::ComputePipeline,
     measure: wgpu::ComputePipeline,
+    advance: wgpu::ComputePipeline,
+    /// A measurement in progress: read-back slot, step, bodies done
+    measuring: Option<(usize, u64, u32)>,
     readback: Vec<Readback>,
     energy_scale: f64,
     momentum_scale: f64,
@@ -206,9 +217,23 @@ impl NBody {
         let vel_hi = storage("velocities (hi)", &vel_hi);
         let vel_lo = storage("velocities (lo)", &vel_lo);
         let acc = storage("accelerations", &vec![[0.0; 4]; bodies.len()]);
+        let snapshot = [
+            "positions (hi)",
+            "positions (lo)",
+            "velocities (hi)",
+            "velocities (lo)",
+        ]
+        .map(|label| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: bodies.len().max(1) as u64 * 16,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        });
         let fixed = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("measurement accumulators"),
-            size: FIXED_SLOTS * 8,
+            size: FIXED_WORDS * 4,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
@@ -251,40 +276,34 @@ impl NBody {
                 storage_entry(6),
             ],
         });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("n-body"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: params_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: pos_hi.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: pos_lo.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: vel_hi.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: vel_lo.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: acc.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: fixed.as_entire_binding(),
-                },
-            ],
-        });
+        let make_group = |label: &str, state: [&wgpu::Buffer; 4]| {
+            let buffers = [
+                &params_buffer,
+                state[0],
+                state[1],
+                state[2],
+                state[3],
+                &acc,
+                &fixed,
+            ];
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &layout,
+                entries: &buffers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, b)| wgpu::BindGroupEntry {
+                        binding: i as u32,
+                        resource: b.as_entire_binding(),
+                    })
+                    .collect::<Vec<_>>(),
+            })
+        };
+        let group = make_group("n-body", [&pos_hi, &pos_lo, &vel_hi, &vel_lo]);
+        let snapshot_group = make_group(
+            "n-body snapshot",
+            [&snapshot[0], &snapshot[1], &snapshot[2], &snapshot[3]],
+        );
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("n-body"),
             bind_group_layouts: &[Some(&layout)],
@@ -341,12 +360,16 @@ impl NBody {
             prime: pipeline("prime"),
             force_kick: pipeline("force_kick"),
             measure: pipeline("measure"),
+            advance: pipeline("advance"),
+            measuring: None,
             pos_hi,
             pos_lo,
             vel_hi,
             vel_lo,
             fixed,
             group,
+            snapshot_group,
+            snapshot,
             readback,
             energy_scale,
             momentum_scale,
@@ -418,36 +441,98 @@ impl NBody {
         self.steps += steps as u64;
     }
 
-    /// Records a measurement of the current state: every distance and mass in
-    /// double-float, so the totals are limited only by fixed-point resolution.
-    /// Costs about ten force passes (56 ms at 8k bodies, 213 ms at 16k on an
-    /// M1), so measure periodically, not every step. Returns false (and
-    /// records nothing) when all read-back buffers are still in use.
-    pub fn measure(&mut self, encoder: &mut wgpu::CommandEncoder) -> bool {
+    /// Starts a measurement: snapshots the state (it's the snapshot that gets
+    /// measured, so stepping can continue). Returns false when a measurement
+    /// is already in progress or all read-back buffers are busy.
+    fn start_measurement(&mut self, encoder: &mut wgpu::CommandEncoder) -> bool {
+        if self.measuring.is_some() {
+            return false;
+        }
         let Some(index) = self.readback.iter().position(|r| !r.in_flight) else {
             return false;
         };
-        encoder.clear_buffer(&self.fixed, 0, None);
+        if !self.primed {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_bind_group(0, &self.group, &[]);
+            pass.set_pipeline(&self.prime);
+            pass.dispatch_workgroups(self.force_groups(), 1, 1);
+            self.primed = true;
+        }
+        let bytes = self.count as u64 * 16;
+        for (live, copy) in [&self.pos_hi, &self.pos_lo, &self.vel_hi, &self.vel_lo]
+            .iter()
+            .zip(&self.snapshot)
         {
+            encoder.copy_buffer_to_buffer(live, 0, copy, 0, bytes);
+        }
+        // Clears the totals and the chunk cursor
+        encoder.clear_buffer(&self.fixed, 0, None);
+        self.readback[index].in_flight = true;
+        self.measuring = Some((index, self.steps, 0));
+        true
+    }
+
+    /// Measures up to `chunks` chunks of 1024 bodies of the measurement in
+    /// progress; when it's complete, queues its read-back.
+    fn continue_measurement(&mut self, encoder: &mut wgpu::CommandEncoder, chunks: u32) {
+        let Some((index, step, done)) = self.measuring else {
+            return;
+        };
+        let left = self.count.saturating_sub(done).div_ceil(MEASURE_CHUNK);
+        let run = left.min(chunks);
+        if run > 0 {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("n-body measure"),
                 timestamp_writes: None,
             });
-            pass.set_bind_group(0, &self.group, &[]);
-            if !self.primed {
-                pass.set_pipeline(&self.prime);
-                pass.dispatch_workgroups(self.force_groups(), 1, 1);
-                self.primed = true;
+            pass.set_bind_group(0, &self.snapshot_group, &[]);
+            for _ in 0..run {
+                pass.set_pipeline(&self.measure);
+                pass.dispatch_workgroups(MEASURE_CHUNK / WORKGROUP, 1, 1);
+                pass.set_pipeline(&self.advance);
+                pass.dispatch_workgroups(1, 1, 1);
             }
-            pass.set_pipeline(&self.measure);
-            pass.dispatch_workgroups(self.groups(), 1, 1);
         }
-        let slot = &mut self.readback[index];
-        encoder.copy_buffer_to_buffer(&self.fixed, 0, &slot.buffer, 0, FIXED_SLOTS * 8);
-        slot.step = self.steps;
-        slot.in_flight = true;
-        slot.pending_map = true;
+        let done = done + run * MEASURE_CHUNK;
+        if done >= self.count {
+            let slot = &mut self.readback[index];
+            encoder.copy_buffer_to_buffer(&self.fixed, 0, &slot.buffer, 0, FIXED_SLOTS * 8);
+            slot.step = step;
+            slot.pending_map = true;
+            self.measuring = None;
+        } else {
+            self.measuring = Some((index, step, done));
+        }
+    }
+
+    /// Records a complete measurement of the current state: every distance
+    /// and mass in double-float, so the totals are limited only by fixed-point
+    /// resolution. Costs about ten force passes (56 ms at 8k bodies, 213 ms at
+    /// 16k on an M1); [`NBody::measure_gradually`] spreads that out. Returns
+    /// false (recording nothing) when a measurement is already in progress or
+    /// all read-back buffers are busy.
+    pub fn measure(&mut self, encoder: &mut wgpu::CommandEncoder) -> bool {
+        if !self.start_measurement(encoder) {
+            return false;
+        }
+        self.continue_measurement(encoder, u32::MAX);
         true
+    }
+
+    /// Advances a measurement by up to `chunks` chunks of 1024 bodies,
+    /// starting one first if none is in progress. Call once a frame to measure
+    /// without a pause in the preview; the result is identical to
+    /// [`NBody::measure`], taken at the step the measurement started.
+    pub fn measure_gradually(&mut self, encoder: &mut wgpu::CommandEncoder, chunks: u32) {
+        if self.measuring.is_none() && !self.start_measurement(encoder) {
+            return;
+        }
+        self.continue_measurement(encoder, chunks);
+    }
+
+    /// Whether a measurement is in progress (started but not all measured).
+    pub fn is_measuring(&self) -> bool {
+        self.measuring.is_some()
     }
 
     /// Call after submitting the commands that recorded [`NBody::measure`].

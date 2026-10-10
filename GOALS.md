@@ -110,9 +110,10 @@ more steps per second; wasm at most 3 MB gzipped.
   over 40 time units (4096 molecules, T about 2) it falls from 5e-5 at dt
   0.004 to 1e-5 at 0.002 and 2.6e-6 at 0.001 (shifted force). The gas
   showcase uses dt 0.002.
-- **Precise measurements are expensive:** about ten force passes (213 ms at
-  16k bodies). Plan: snapshot the state, then measure the snapshot spread over
-  several frames.
+- **Precise gravity measurements cost about ten force passes** (213 ms at 16k
+  bodies). `NBody::measure_gradually` snapshots the state and spreads the work
+  over frames in chunks of 1024 bodies, with a result bit-identical to a
+  complete measurement, so the preview no longer pauses.
 - **Safari** is untested.
 - **CI runs only on release tags** (and by hand). Day-to-day, `scripts/check.sh`
   is the gate; it runs the GPU tests that CI can't, since CI has no GPU.

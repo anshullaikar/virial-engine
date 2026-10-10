@@ -110,6 +110,7 @@ pub fn run<S: Scene>(config: Config) {
     let app = App::<S> {
         stats: Stats::new(config.title),
         data: DataLog::preview(),
+        occluded: false,
         config,
         proxy: event_loop.create_proxy(),
         window: None,
@@ -133,6 +134,14 @@ pub fn run<S: Scene>(config: Config) {
 /// browser cannot block waiting for the GPU.
 struct GpuReady(Result<Gpu, GpuError>);
 
+#[derive(PartialEq, Eq)]
+enum Drawn {
+    Shown,
+    Skipped,
+    /// The window is hidden; nothing can be shown until it's visible
+    Occluded,
+}
+
 struct Running<S> {
     gpu: Gpu,
     scene: S,
@@ -150,6 +159,9 @@ struct App<S> {
     input: Input,
     stats: Stats,
     data: DataLog,
+    /// The window is hidden: stop drawing until it's visible again, rather
+    /// than spinning through frames that can't be shown
+    occluded: bool,
 }
 
 impl<S: Scene> ApplicationHandler<GpuReady> for App<S> {
@@ -217,6 +229,12 @@ impl<S: Scene> ApplicationHandler<GpuReady> for App<S> {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Occluded(hidden) => {
+                self.occluded = hidden;
+                if !hidden && let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
             WindowEvent::Resized(size) => {
                 self.input.set_surface_size(size.width, size.height);
                 if let Some(running) = &mut self.running {
@@ -249,13 +267,20 @@ impl<S: Scene> ApplicationHandler<GpuReady> for App<S> {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(running) = &mut self.running {
-                    running.draw(&self.input, &mut self.stats, &mut self.data);
+                    if running.draw(&self.input, &mut self.stats, &mut self.data) == Drawn::Occluded
+                    {
+                        self.occluded = true;
+                    }
                     if let Some(window) = &self.window {
                         self.stats.show(window);
                     }
                 }
                 self.input.end_frame();
-                if let Some(window) = &self.window {
+                // Keep drawing, unless the window is hidden: then wait for
+                // the Occluded(false) event instead of spinning
+                if !self.occluded
+                    && let Some(window) = &self.window
+                {
                     window.request_redraw();
                 }
             }
@@ -265,7 +290,7 @@ impl<S: Scene> ApplicationHandler<GpuReady> for App<S> {
 }
 
 impl<S: Scene> Running<S> {
-    fn draw(&mut self, input: &Input, stats: &mut Stats, data: &mut DataLog) {
+    fn draw(&mut self, input: &Input, stats: &mut Stats, data: &mut DataLog) -> Drawn {
         // Native backends deliver buffer-map callbacks here; on the web the
         // browser delivers them itself
         let _ = self.gpu.device.poll(wgpu::PollType::Poll);
@@ -303,12 +328,13 @@ impl<S: Scene> Running<S> {
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
             wgpu::CurrentSurfaceTexture::Outdated => {
                 surface.configure(&gpu.device, &gpu.config);
-                return;
+                return Drawn::Skipped;
             }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
+            wgpu::CurrentSurfaceTexture::Occluded => return Drawn::Occluded,
+            wgpu::CurrentSurfaceTexture::Timeout => return Drawn::Skipped,
             other => {
                 log::warn!("skipped a frame: {other:?}");
-                return;
+                return Drawn::Skipped;
             }
         };
         let view = texture
@@ -338,6 +364,7 @@ impl<S: Scene> Running<S> {
         if suboptimal {
             surface.configure(&gpu.device, &gpu.config);
         }
+        Drawn::Shown
     }
 }
 

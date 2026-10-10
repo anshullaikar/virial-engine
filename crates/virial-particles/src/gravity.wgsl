@@ -189,16 +189,28 @@ fn force_kick(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_ind
     }
 }
 
+// Bodies per measurement chunk, and the word in virial_fixed holding the
+// first body of the next chunk
+const MEASURE_CHUNK: u32 = 1024u;
+const CURSOR: u32 = 16u;
+
+// Moves the measurement on to the next chunk
+@compute @workgroup_size(1)
+fn advance() {
+    atomicAdd(&virial_fixed[CURSOR], MEASURE_CHUNK);
+}
+
 // Energy and momentum into fixed-point slots: 0 kinetic, 1 potential,
 // 2-4 momentum xyz. Everything here is double-float, distances and masses
 // included, so a measurement is limited by fixed-point resolution (2^-52 of
-// the total), not by f32. About 10x the cost of a force pass: for checks, not
-// for every step.
+// the total), not by f32. About 10x the cost of a force pass, so it runs in
+// chunks of MEASURE_CHUNK bodies (each against all bodies), on a snapshot of
+// the state bound in place of the live buffers.
 @compute @workgroup_size(TILE)
 fn measure(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_index) li: u32) {
     df_init(params.one);
     fixed_wg_clear(li);
-    let i = id.x;
+    let i = atomicLoad(&virial_fixed[CURSOR]) + id.x;
     let in_range = i < params.count;
     var xh = vec4f(0.0);
     var xl = vec4f(0.0);
