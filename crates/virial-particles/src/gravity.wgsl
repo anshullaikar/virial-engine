@@ -74,60 +74,98 @@ fn load_tile(t: u32, li: u32) {
     }
 }
 
-// Acceleration on body i from every other body, one tile of 256 at a time
-// through workgroup memory. Every thread runs every barrier.
-fn acceleration(i: u32, li: u32) -> vec3f {
-    var xh = vec3f(0.0);
-    var xl = vec3f(0.0);
-    if i < params.count {
-        xh = pos_hi[i].xyz;
-        xl = pos_lo[i].xyz;
+struct Pair {
+    a0: vec3f,
+    a1: vec3f,
+}
+
+// Accelerations on two bodies, i0 = base + li and i1 = i0 + TILE, from every
+// other body, one tile of TILE at a time through workgroup memory. Two bodies
+// per thread halves the workgroup-memory reads per interaction. Every thread
+// runs every barrier.
+fn accelerations(base: u32, li: u32) -> Pair {
+    let i0 = base + li;
+    let i1 = i0 + TILE;
+    var xh0 = vec3f(0.0);
+    var xl0 = vec3f(0.0);
+    var xh1 = vec3f(0.0);
+    var xl1 = vec3f(0.0);
+    if i0 < params.count {
+        xh0 = pos_hi[i0].xyz;
+        xl0 = pos_lo[i0].xyz;
     }
-    var a = vec3f(0.0);
+    if i1 < params.count {
+        xh1 = pos_hi[i1].xyz;
+        xl1 = pos_lo[i1].xyz;
+    }
+    // With softening, a body's pull on itself and on padding (mass 0) is
+    // exactly zero, so the per-pair check is only needed for exact gravity
+    let exact = params.eps2 == 0.0;
+    var a0 = vec3f(0.0);
+    var a1 = vec3f(0.0);
     let tiles = (params.count + TILE - 1u) / TILE;
     for (var t = 0u; t < tiles; t++) {
         load_tile(t, li);
         workgroupBarrier();
         for (var k = 0u; k < TILE; k++) {
-            let j = t * TILE + k;
             let p = tile_hi[k];
-            let d = (p.xyz - xh) + (tile_lo[k].xyz - xl);
-            let r2 = dot(d, d) + params.eps2;
-            let inv = select(inverseSqrt(r2), 0.0, j == i || j >= params.count);
-            a += d * (p.w * inv * inv * inv);
+            let q = tile_lo[k].xyz;
+            let d0 = (p.xyz - xh0) + (q - xl0);
+            let d1 = (p.xyz - xh1) + (q - xl1);
+            var inv0 = inverseSqrt(dot(d0, d0) + params.eps2);
+            var inv1 = inverseSqrt(dot(d1, d1) + params.eps2);
+            if exact {
+                let j = t * TILE + k;
+                let pad = j >= params.count;
+                inv0 = select(inv0, 0.0, pad || j == i0);
+                inv1 = select(inv1, 0.0, pad || j == i1);
+            }
+            a0 += d0 * (p.w * inv0 * inv0 * inv0);
+            a1 += d1 * (p.w * inv1 * inv1 * inv1);
         }
         workgroupBarrier();
     }
-    return a * params.g;
+    return Pair(a0 * params.g, a1 * params.g);
+}
+
+fn kick(i: u32, a: vec3f) {
+    acc[i] = vec4f(a, 0.0);
+    var vh = vel_hi[i];
+    var vl = vel_lo[i];
+    for (var k = 0u; k < 3u; k++) {
+        let v = df_add_f(vec2f(vh[k], vl[k]), a[k] * params.half_dt);
+        vh[k] = v.x;
+        vl[k] = v.y;
+    }
+    vel_hi[i] = vh;
+    vel_lo[i] = vl;
 }
 
 // Accelerations only: used once before the first step
 @compute @workgroup_size(256)
-fn prime(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_index) li: u32) {
+fn prime(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) li: u32) {
     df_init(params.one);
-    let a = acceleration(id.x, li);
-    if id.x < params.count {
-        acc[id.x] = vec4f(a, 0.0);
+    let base = group.x * 2u * TILE;
+    let a = accelerations(base, li);
+    if base + li < params.count {
+        acc[base + li] = vec4f(a.a0, 0.0);
+    }
+    if base + li + TILE < params.count {
+        acc[base + li + TILE] = vec4f(a.a1, 0.0);
     }
 }
 
 // New accelerations, then the second half kick: v += a dt/2
 @compute @workgroup_size(256)
-fn force_kick(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_index) li: u32) {
+fn force_kick(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) li: u32) {
     df_init(params.one);
-    let i = id.x;
-    let a = acceleration(i, li);
-    if i < params.count {
-        acc[i] = vec4f(a, 0.0);
-        var vh = vel_hi[i];
-        var vl = vel_lo[i];
-        for (var k = 0u; k < 3u; k++) {
-            let v = df_add_f(vec2f(vh[k], vl[k]), a[k] * params.half_dt);
-            vh[k] = v.x;
-            vl[k] = v.y;
-        }
-        vel_hi[i] = vh;
-        vel_lo[i] = vl;
+    let base = group.x * 2u * TILE;
+    let a = accelerations(base, li);
+    if base + li < params.count {
+        kick(base + li, a.a0);
+    }
+    if base + li + TILE < params.count {
+        kick(base + li + TILE, a.a1);
     }
 }
 
@@ -200,3 +238,4 @@ fn measure(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_i
     workgroupBarrier();
     fixed_wg_flush(li, 0u);
 }
+

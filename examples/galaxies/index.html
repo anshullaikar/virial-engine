@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Virial: galaxies</title>
+    <link rel="stylesheet" href="../style.css" />
+    <style>
+      .record { position: fixed; right: 12px; bottom: 12px; padding: 8px 14px; border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 999px; background: rgba(13, 15, 22, 0.82); color: #e9ebf3; font: inherit; cursor: pointer; }
+      .record[aria-pressed="true"] { border-color: #f2555a; color: #f2555a; }
+      .record:focus-visible { outline: 2px solid #34d399; outline-offset: 2px; }
+      .caption { position: fixed; left: 12px; bottom: 12px; max-width: 46ch; margin: 0; color: #8c92a8; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <nav class="controls" aria-label="Number of bodies"></nav>
+    <button class="record" type="button" aria-pressed="false">Record video</button>
+    <p class="caption">Two disk galaxies on a close flyby. Every star feels every other star (exact gravity on the GPU); tidal tails form as they pass.</p>
+    <script type="module">
+      import { load } from '../loader.js';
+
+      const params = new URLSearchParams(location.search);
+      const n = params.get('n') ?? '8192';
+      const nav = document.querySelector('.controls');
+      for (const value of ['4096', '8192', '16384', '32768']) {
+        const a = document.createElement('a');
+        a.href = `?n=${value}`;
+        a.textContent = `${Number(value) / 1024}k bodies`;
+        if (value === n) a.setAttribute('aria-current', 'true');
+        nav.append(a);
+      }
+
+      // Records the canvas in real time with the browser's own encoder
+      const button = document.querySelector('.record');
+      let recorder = null;
+      button.addEventListener('click', () => {
+        if (recorder) {
+          recorder.stop();
+          return;
+        }
+        const canvas = document.querySelector('canvas');
+        if (!canvas) return;
+        const type = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+        recorder = new MediaRecorder(canvas.captureStream(60), { mimeType: type, videoBitsPerSecond: 16_000_000 });
+        const chunks = [];
+        recorder.ondataavailable = (event) => chunks.push(event.data);
+        recorder.onstop = () => {
+          const link = document.createElement('a');
+          link.href = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }));
+          link.download = `virial-galaxies-${n}.webm`;
+          link.click();
+          recorder = null;
+          button.textContent = 'Record video';
+          button.setAttribute('aria-pressed', 'false');
+        };
+        recorder.start();
+        button.textContent = 'Stop and save';
+        button.setAttribute('aria-pressed', 'true');
+      });
+
+      load('galaxies');
+    </script>
+  </body>
+</html>

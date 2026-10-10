@@ -1,0 +1,12 @@
+[package]
+name = "galaxies"
+description = "Two disk galaxies colliding: GPU gravity with live energy readouts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+virial.workspace = true
+virial-particles.workspace = true
+bytemuck.workspace = true

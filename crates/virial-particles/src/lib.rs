@@ -371,8 +371,14 @@ impl NBody {
         &self.vel_hi
     }
 
+    /// Workgroups for one-body-per-thread kernels (drift, measure)
     fn groups(&self) -> u32 {
         self.count.div_ceil(WORKGROUP)
+    }
+
+    /// Workgroups for the force kernels, which handle two bodies per thread
+    fn force_groups(&self) -> u32 {
+        self.count.div_ceil(2 * WORKGROUP)
     }
 
     /// Records `steps` steps into one compute pass.
@@ -382,7 +388,7 @@ impl NBody {
         steps: u32,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
-        let groups = self.groups();
+        let (groups, force_groups) = (self.groups(), self.force_groups());
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("n-body steps"),
             timestamp_writes,
@@ -390,20 +396,23 @@ impl NBody {
         pass.set_bind_group(0, &self.group, &[]);
         if !self.primed {
             pass.set_pipeline(&self.prime);
-            pass.dispatch_workgroups(groups, 1, 1);
+            pass.dispatch_workgroups(force_groups, 1, 1);
             self.primed = true;
         }
         for _ in 0..steps {
             pass.set_pipeline(&self.drift);
             pass.dispatch_workgroups(groups, 1, 1);
             pass.set_pipeline(&self.force_kick);
-            pass.dispatch_workgroups(groups, 1, 1);
+            pass.dispatch_workgroups(force_groups, 1, 1);
         }
         self.steps += steps as u64;
     }
 
-    /// Records a measurement of the current state. Returns false (and records
-    /// nothing) when all read-back buffers are still in use.
+    /// Records a measurement of the current state: every distance and mass in
+    /// double-float, so the totals are limited only by fixed-point resolution.
+    /// Costs about ten force passes (56 ms at 8k bodies, 213 ms at 16k on an
+    /// M1), so measure periodically, not every step. Returns false (and
+    /// records nothing) when all read-back buffers are still in use.
     pub fn measure(&mut self, encoder: &mut wgpu::CommandEncoder) -> bool {
         let Some(index) = self.readback.iter().position(|r| !r.in_flight) else {
             return false;
@@ -417,7 +426,7 @@ impl NBody {
             pass.set_bind_group(0, &self.group, &[]);
             if !self.primed {
                 pass.set_pipeline(&self.prime);
-                pass.dispatch_workgroups(self.groups(), 1, 1);
+                pass.dispatch_workgroups(self.force_groups(), 1, 1);
                 self.primed = true;
             }
             pass.set_pipeline(&self.measure);
