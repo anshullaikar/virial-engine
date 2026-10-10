@@ -37,6 +37,7 @@ above about 1000).
 | `dilute_gas_obeys_the_ideal_gas_law_and_virial_expansion` | 4096 molecules, density 0.01, T = 2, Langevin thermostat, 2000 samples | PV/NkT within 1% of 1, and within 4 standard errors of 1 + B₂ρ | 0.99244 ± 0.00012 (0.76% from ideal); 1 + B₂ρ = 0.99228, 1.3 standard errors away |
 | `gas_relaxes_to_maxwell_boltzmann_at_constant_energy` | 4096 molecules all starting at one speed, no thermostat, 60 time units | KS distance from Maxwell–Boltzmann below 0.01; drift below 1e-4 | KS 0.61 → 0.0032; drift 4.6e-5 |
 | `thermostatted_reruns_are_bit_identical` | 2000 molecules with random thermostat kicks, twice | Bit-identical | Identical |
+| `nose_hoover_samples_the_canonical_ensemble` | 1000 molecules, Nosé–Hoover at T = 1.5, 2000 samples | Mean T within 1%; Var(T)/T² within 15% of 2/(3N−3); extended energy drift below 1e-4 | Mean T 1.5001; fluctuations −9.6% from canonical; extended energy drift 5.2e-5 over 40,000 steps |
 | `lj_timestep_study` (run by hand) | Drift over 40 time units vs step size | — | Shifted force: 5.0e-5 (dt 0.004), 1.0e-5 (0.002), 2.6e-6 (0.001) |
 
 ## Granular materials (`virial-particles`, `Granular`, SI units)

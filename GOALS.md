@@ -48,6 +48,10 @@ When two of these conflict, the higher one wins.
   MacBook Air M1: sustained GPU load throttles it, and other GPU work (an
   open demo tab) competes. Close other GPU work, let it cool for a few
   minutes, and run the benchmark more than once.
+- **Never store a number close to 1 in f32 when its distance from 1 is what
+  matters.** The Nosé–Hoover velocity scale exp(-xi dt / 2) sits within 1e-4
+  of 1, and f32 rounding of it drifted the conserved energy by 1e-3 per 10^4
+  steps; storing s - 1 instead cut the drift 165-fold.
 - **Test precision tricks on the GPU, not just the CPU.** Metal compiles in
   fast-math mode and has silently undone two of them (double-float maths and
   the fixed-point split). WGSL that depends on exact float behaviour goes
@@ -82,7 +86,7 @@ When two of these conflict, the higher one wins.
 | 4 | Particle dynamics (gravity, Verlet, measurements) | Done: Kepler energy exact to 13 digits, drift 3.4e-7 over 100 orbits, reruns bit-identical |
 | 5 | Renderer for science (sprites, colour maps, cameras, readouts) | Done: `virial-render` draws glowing sprites or depth-correct shaded spheres, viridis and inferno colour maps (CC0), floors and walls with grids, orbit cameras with keyframed paths, and text, panels and colour bars burned into frames (public-domain font8x8). Not yet measured: the 1M-particle preview target |
 | 6 | Video and data export on a simulation clock | Done natively: `record=<dir>` renders MP4 (ffmpeg) plus frames.csv, measurements.csv, .npy snapshots and run.json; reruns give identical frame hashes. 60 s 1080p60 galaxy collision rendered in 7.5 min. Browser offline export (WebCodecs) still to do |
-| 7 | Bridge to thermodynamics | Done. Lennard-Jones gas: ideal gas law within 0.76%, virial expansion within 1.3 standard errors, relaxes to Maxwell-Boltzmann (KS 0.003) at constant energy. Granular contact (SI units): Hertz contact time exact to 5 digits, a settled pile carries its weight to 0.009%. Not done: Nosé–Hoover thermostat (Langevin covers the tests); grain rotation and friction memory |
+| 7 | Bridge to thermodynamics | Done. Lennard-Jones gas: ideal gas law within 0.76%, virial expansion within 1.3 standard errors, relaxes to Maxwell-Boltzmann (KS 0.003) at constant energy. Granular contact (SI units): Hertz contact time exact to 5 digits, a settled pile carries its weight to 0.009%. Nosé–Hoover thermostat added later: canonical fluctuations, extended energy conserved to 5e-5. Not done: grain rotation and friction memory |
 | 8 | Validation report and release | Report (docs/VALIDATION.md), changelog and the three showcase videos done. Release (crates 0.1.0, tag, GitHub release with videos) waits for approval |
 
 Release targets (estimates until measured): energy drift below 1e-6 over 10⁶

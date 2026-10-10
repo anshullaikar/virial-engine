@@ -34,6 +34,27 @@ pub struct Langevin {
     pub seed: u32,
 }
 
+/// Nose-Hoover thermostat: a single friction variable driven by the gap
+/// between the kinetic and target temperatures. Deterministic, and samples the
+/// canonical ensemble; it conserves an extended energy
+/// ([`Measurement::extended_energy`]).
+#[derive(Clone, Copy, Debug)]
+pub struct NoseHoover {
+    pub temperature: f64,
+    /// Time scale of the thermostat's response; sets its mass
+    /// Q = g k T period^2 / (4 pi^2)
+    pub period: f64,
+}
+
+/// What holds the temperature, if anything.
+#[derive(Clone, Copy, Debug)]
+pub enum Thermostat {
+    /// Constant energy (velocity Verlet)
+    None,
+    Langevin(Langevin),
+    NoseHoover(NoseHoover),
+}
+
 /// Box, cutoff, time step and thermostat.
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
@@ -42,8 +63,7 @@ pub struct Settings {
     pub box_size: f64,
     pub cutoff: f64,
     pub dt: f64,
-    /// `None`: constant energy (velocity Verlet)
-    pub thermostat: Option<Langevin>,
+    pub thermostat: Thermostat,
     /// Shift the force as well as the energy, so both reach zero smoothly at
     /// the cutoff. Conserves energy much better; slightly changes the model,
     /// so compare thermodynamics against results for the same potential.
@@ -69,8 +89,10 @@ pub struct Measurement {
     /// Neighbour-list rebuilds so far
     pub list_rebuilds: u32,
     /// 0, or the largest neighbour count that didn't fit in a list (the
-    /// forces are then wrong; raise [`Settings::skin`]'s capacity margin)
+    /// forces are then wrong)
     pub list_overflow: u32,
+    /// Nose-Hoover only: the thermostat's energy Q xi^2 / 2 + g k T eta
+    pub thermostat_energy: f64,
 }
 
 impl Measurement {
@@ -87,6 +109,12 @@ impl Measurement {
     /// Pressure from the virial theorem.
     pub fn pressure(&self) -> f64 {
         (2.0 * self.kinetic + self.virial) / (3.0 * self.volume)
+    }
+
+    /// Energy plus the Nose-Hoover thermostat's energy: the quantity a
+    /// Nose-Hoover run conserves (equal to [`Measurement::energy`] otherwise).
+    pub fn extended_energy(&self) -> f64 {
+        self.energy() + self.thermostat_energy
     }
 }
 
@@ -113,13 +141,15 @@ struct Params {
     list_r2: f32,
     half_skin2: f32,
     capacity: u32,
-    _pad: [u32; 3],
+    nh_gkt: f32,
+    nh_q: f32,
+    _pad: u32,
 }
 
 const WORKGROUP: u32 = 256;
 const SLOTS: u64 = 8;
 /// Words in the accumulator buffer: 8 two-word slots, then list control words
-const CONTROL_WORDS: u64 = 20;
+const CONTROL_WORDS: u64 = 28;
 const RING: usize = 3;
 
 struct Readback {
@@ -149,12 +179,17 @@ pub struct LennardJones {
     pipelines: Pipelines,
     dispatch: wgpu::Buffer,
     readback: Vec<Readback>,
+    /// Nose-Hoover: (g k T, Q); None for other thermostats
+    nose_hoover: Option<(f64, f64)>,
     energy_scale: f64,
     momentum_scale: f64,
 }
 
 struct Pipelines {
     begin: wgpu::ComputePipeline,
+    ke_sum: wgpu::ComputePipeline,
+    nh_update: wgpu::ComputePipeline,
+    nh_scale: wgpu::ComputePipeline,
     pack: wgpu::ComputePipeline,
     decide: wgpu::ComputePipeline,
     build_list: wgpu::ComputePipeline,
@@ -226,9 +261,11 @@ impl LennardJones {
             .iter()
             .map(|p| 0.5 * p.vel.iter().map(|v| v * v).sum::<f64>())
             .sum();
-        let thermal = settings
-            .thermostat
-            .map_or(0.0, |t| 1.5 * t.temperature * count as f64);
+        let thermal = match settings.thermostat {
+            Thermostat::None => 0.0,
+            Thermostat::Langevin(t) => 1.5 * t.temperature * count as f64,
+            Thermostat::NoseHoover(t) => 1.5 * t.temperature * count as f64,
+        };
         let energy_scale = scale_for(kinetic.max(thermal).max(count as f64));
         let speed: f64 = particles
             .iter()
@@ -245,12 +282,19 @@ impl LennardJones {
         } else {
             0.0
         };
-        let (thermostat, c1, c2) = match settings.thermostat {
-            Some(t) => {
+        // Nose-Hoover with zero total momentum: g = 3N - 3
+        let dof = 3.0 * count as f64 - 3.0;
+        let (thermostat, c1, c2, nh_gkt, nh_q) = match settings.thermostat {
+            Thermostat::None => (0, 1.0, 0.0, 0.0, 1.0),
+            Thermostat::Langevin(t) => {
                 let c1 = (-t.friction * settings.dt).exp();
-                (1, c1, ((1.0 - c1 * c1) * t.temperature).sqrt())
+                (1, c1, ((1.0 - c1 * c1) * t.temperature).sqrt(), 0.0, 1.0)
             }
-            None => (0, 1.0, 0.0),
+            Thermostat::NoseHoover(t) => {
+                let q = dof * t.temperature * t.period * t.period
+                    / (4.0 * std::f64::consts::PI.powi(2));
+                (2, 1.0, 0.0, dof * t.temperature, q)
+            }
         };
         let params = Params {
             count,
@@ -273,7 +317,9 @@ impl LennardJones {
             list_r2: (list_radius * list_radius) as f32,
             half_skin2: (0.25 * settings.skin * settings.skin) as f32,
             capacity,
-            _pad: [0; 3],
+            nh_gkt: nh_gkt as f32,
+            nh_q: nh_q as f32,
+            _pad: 0,
         };
 
         let usage = wgpu::BufferUsages::STORAGE
@@ -294,7 +340,10 @@ impl LennardJones {
                 mapped_at_creation: false,
             })
         };
-        let seed = settings.thermostat.map_or(1, |t| t.seed);
+        let seed = match settings.thermostat {
+            Thermostat::Langevin(t) => t.seed,
+            _ => 1,
+        };
         let rng: Vec<u32> = (0..count)
             .map(|i| {
                 // splitmix-style hash so neighbouring particles get unrelated streams
@@ -426,6 +475,9 @@ impl LennardJones {
         };
         let pipelines = Pipelines {
             begin: pipeline("begin"),
+            ke_sum: pipeline("ke_sum"),
+            nh_update: pipeline("nh_update"),
+            nh_scale: pipeline("nh_scale"),
             pack: pipeline("pack"),
             decide: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("decide"),
@@ -481,6 +533,7 @@ impl LennardJones {
             pipelines,
             dispatch,
             readback,
+            nose_hoover: (thermostat == 2).then_some((nh_gkt, nh_q)),
             energy_scale,
             momentum_scale,
         }
@@ -579,12 +632,29 @@ impl LennardJones {
         });
         pass.set_bind_group(0, &self.group, &[]);
         self.prime_if_needed(&mut pass);
+        let p = &self.pipelines;
+        let nose_hoover = self.nose_hoover.is_some();
         for _ in 0..steps {
-            pass.set_pipeline(&self.pipelines.begin);
+            if nose_hoover {
+                // First thermostat half step: `begin` applies its scaling
+                pass.set_pipeline(&p.ke_sum);
+                pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_pipeline(&p.nh_update);
+                pass.dispatch_workgroups(1, 1, 1);
+            }
+            pass.set_pipeline(&p.begin);
             pass.dispatch_workgroups(particles, 1, 1);
             self.update_lists(&mut pass);
-            pass.set_pipeline(&self.pipelines.force_kick);
+            pass.set_pipeline(&p.force_kick);
             pass.dispatch_workgroups(particles, 1, 1);
+            if nose_hoover {
+                pass.set_pipeline(&p.ke_sum);
+                pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_pipeline(&p.nh_update);
+                pass.dispatch_workgroups(1, 1, 1);
+                pass.set_pipeline(&p.nh_scale);
+                pass.dispatch_workgroups(particles, 1, 1);
+            }
         }
         self.steps += steps as u64;
     }
@@ -655,6 +725,13 @@ impl LennardJones {
                 volume: self.box_size.powi(3),
                 list_rebuilds: words[17],
                 list_overflow: words[18],
+                thermostat_energy: self.nose_hoover.map_or(0.0, |(gkt, q)| {
+                    let df = |w: usize| {
+                        f32::from_bits(words[w]) as f64 + f32::from_bits(words[w + 1]) as f64
+                    };
+                    let (xi, eta) = (df(22), df(24));
+                    0.5 * q * xi * xi + gkt * eta
+                }),
             });
         }
         done.sort_by_key(|m| m.step);

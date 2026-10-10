@@ -39,7 +39,8 @@ struct Params {
     count: u32,
     cells: u32,
     total_cells: u32,
-    // 0: constant energy (velocity Verlet), 1: Langevin thermostat (BAOAB)
+    // 0: constant energy (velocity Verlet), 1: Langevin thermostat (BAOAB),
+    // 2: Nose-Hoover thermostat
     thermostat: u32,
     box_size: f32,
     cell_size: f32,
@@ -64,9 +65,10 @@ struct Params {
     half_skin2: f32,
     // Neighbours stored per particle (the list holds a count, then these)
     capacity: u32,
+    // Nose-Hoover: g k T (g degrees of freedom) and the thermostat mass Q
+    nh_gkt: f32,
+    nh_q: f32,
     _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -86,6 +88,15 @@ const MAX_DISPLACEMENT: u32 = 16u;
 const REBUILDS: u32 = 17u;
 const OVERFLOW: u32 = 18u;
 const NEVER_BUILT: u32 = 19u;
+// Nose-Hoover: kinetic energy sum (fixed-point slot 10, words 20-21), the
+// thermostat's xi and eta as double-floats, and the current velocity scale
+// minus one. (The scale itself sits within about 1e-4 of 1, where f32 has
+// only about 6e-8 resolution: storing it directly mis-books about 0.06% of
+// the energy exchanged with the thermostat every half step.)
+const KE_SLOT: u32 = 10u;
+const XI: u32 = 22u;
+const ETA: u32 = 24u;
+const SCALE: u32 = 26u;
 
 // ---- Packed positions ----
 
@@ -185,6 +196,16 @@ fn step_particle(i: u32) {
     let a = state[4u * params.segment + i];
     var vh = state[2u * params.segment + i];
     var vl = state[3u * params.segment + i];
+    if params.thermostat == 2u {
+        // The first Nose-Hoover half step's velocity scaling: v + v (s - 1)
+        let s_minus_1 = bitcast<f32>(atomicLoad(&virial_fixed[SCALE]));
+        for (var k = 0u; k < 3u; k++) {
+            let old = vec2f(vh[k], vl[k]);
+            let v = df_add(old, df_mul_f(old, s_minus_1));
+            vh[k] = v.x;
+            vl[k] = v.y;
+        }
+    }
     var ph = state[i];
     var pl = state[params.segment + i];
     var noise = vec3f(0.0);
@@ -254,6 +275,96 @@ fn decide() {
         atomicAdd(&virial_fixed[REBUILDS], 1u);
         atomicStore(&virial_fixed[NEVER_BUILT], 1u);
     }
+}
+
+// ---- Nose-Hoover thermostat (Tuckerman's time-reversible splitting) ----
+//
+// Each step is: thermostat half step, velocity Verlet, thermostat half step.
+// A half step sums the kinetic energy (ke_sum), then one thread (nh_update)
+// advances xi and eta and sets the velocity scale exp(-xi dt / 2), which
+// `begin` (first half) or `scale` (second half) applies. The conserved
+// quantity is KE + PE + Q xi^2 / 2 + g k T eta.
+
+@compute @workgroup_size(256)
+fn ke_sum(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_index) li: u32) {
+    df_init(params.one);
+    fixed_wg_clear(li);
+    workgroupBarrier();
+    var ke = vec2f(0.0);
+    if id.x < params.count {
+        let vh = state[2u * params.segment + id.x];
+        let vl = state[3u * params.segment + id.x];
+        for (var k = 0u; k < 3u; k++) {
+            let v = vec2f(vh[k], vl[k]);
+            ke = df_add(ke, df_mul(v, v));
+        }
+        ke = df_mul_f(ke, 0.5);
+    }
+    fixed_wg_add(0u, ke.x * params.energy_scale);
+    fixed_wg_add(0u, ke.y * params.energy_scale);
+    workgroupBarrier();
+    fixed_wg_flush(li, KE_SLOT);
+}
+
+fn load_df(word: u32) -> vec2f {
+    return vec2f(bitcast<f32>(atomicLoad(&virial_fixed[word])), bitcast<f32>(atomicLoad(&virial_fixed[word + 1u])));
+}
+
+fn store_df(word: u32, x: vec2f) {
+    atomicStore(&virial_fixed[word], bitcast<u32>(x.x));
+    atomicStore(&virial_fixed[word + 1u], bitcast<u32>(x.y));
+}
+
+@compute @workgroup_size(1)
+fn nh_update() {
+    df_init(params.one);
+    // Kinetic energy from the 64-bit fixed-point sum, kept in double-float:
+    // the low word goes in as two 16-bit halves so no bits are lost
+    let low = atomicLoad(&virial_fixed[2u * KE_SLOT]);
+    let high = atomicLoad(&virial_fixed[2u * KE_SLOT + 1u]);
+    atomicStore(&virial_fixed[2u * KE_SLOT], 0u);
+    atomicStore(&virial_fixed[2u * KE_SLOT + 1u], 0u);
+    var raw = df_add_f(df_from(f32(bitcast<i32>(high))), f32(low >> 16u) / 65536.0);
+    raw = df_add_f(raw, f32(low & 0xffffu) / 4294967296.0);
+    let ke = df_mul_f(raw, 1.0 / params.energy_scale);
+
+    var xi = load_df(XI);
+    var eta = load_df(ETA);
+    let quarter = 0.25 * params.dt;
+    // xi += (2 KE - g k T) / Q * dt / 4
+    let g1 = df_mul_f(df_add_f(df_mul_f(ke, 2.0), -params.nh_gkt), 1.0 / params.nh_q);
+    xi = df_add(xi, df_mul_f(g1, quarter));
+    // s - 1 = exp(-x) - 1 for small x, by series: accurate relative to s - 1
+    let x = df_to_f32(xi) * params.half_dt;
+    let s_minus_1 = -x * (1.0 - x * (0.5 - x * (1.0 / 6.0 - x / 24.0)));
+    eta = df_add(eta, df_mul_f(xi, params.half_dt));
+    // Kinetic energy after scaling: KE s^2 = KE + KE (2 (s - 1) + (s - 1)^2)
+    let ke2 = df_add(ke, df_mul_f(ke, s_minus_1 * (2.0 + s_minus_1)));
+    let g2 = df_mul_f(df_add_f(df_mul_f(ke2, 2.0), -params.nh_gkt), 1.0 / params.nh_q);
+    xi = df_add(xi, df_mul_f(g2, quarter));
+    store_df(XI, xi);
+    store_df(ETA, eta);
+    atomicStore(&virial_fixed[SCALE], bitcast<u32>(s_minus_1));
+}
+
+// The second Nose-Hoover half step's velocity scaling
+@compute @workgroup_size(256)
+fn nh_scale(@builtin(global_invocation_id) id: vec3u) {
+    df_init(params.one);
+    if id.x >= params.count {
+        return;
+    }
+    let s_minus_1 = bitcast<f32>(atomicLoad(&virial_fixed[SCALE]));
+    var vh = state[2u * params.segment + id.x];
+    var vl = state[3u * params.segment + id.x];
+    for (var k = 0u; k < 3u; k++) {
+        let old = vec2f(vh[k], vl[k]);
+        let v = df_add(old, df_mul_f(old, s_minus_1));
+        vh[k] = v.x;
+        vl[k] = v.y;
+    }
+    state[2u * params.segment + id.x] = vh;
+    state[3u * params.segment + id.x] = vl;
 }
 
 // ---- Cell grid: grid.wgsl, appended at build time ----

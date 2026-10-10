@@ -4,7 +4,7 @@
 //! falls about fourfold per halving of dt: step size dominates, not the cutoff.
 
 use virial_gpu::Compute;
-use virial_particles::lennard_jones::{LennardJones, Settings, lattice};
+use virial_particles::lennard_jones::{LennardJones, Settings, Thermostat, lattice};
 
 #[test]
 #[ignore = "study: run explicitly"]
@@ -22,7 +22,7 @@ fn lj_timestep_study() {
                 box_size,
                 cutoff: 2.5,
                 dt,
-                thermostat: None,
+                thermostat: Thermostat::None,
                 shifted_force,
                 skin: 0.3,
             };
@@ -53,7 +53,7 @@ fn lj_speed() {
             box_size,
             cutoff: 2.5,
             dt: 0.002,
-            thermostat: None,
+            thermostat: Thermostat::None,
             shifted_force: true,
             skin: 0.3,
         };
@@ -91,7 +91,7 @@ fn lj_rebuild_cost() {
             box_size,
             cutoff: 2.5,
             dt: 0.002,
-            thermostat: None,
+            thermostat: Thermostat::None,
             shifted_force: true,
             skin,
         };

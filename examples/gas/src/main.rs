@@ -16,7 +16,9 @@
 
 use bytemuck::{Pod, Zeroable};
 use virial::{Config, Context, Frame, Gpu, KeyCode, Scene, arg, wgpu};
-use virial_particles::lennard_jones::{LennardJones, Measurement, Particle, Settings, lattice};
+use virial_particles::lennard_jones::{
+    LennardJones, Measurement, Particle, Settings, Thermostat, lattice,
+};
 use virial_render::{
     COLORMAPS_WGSL, Camera, CameraPath, Coloring, Colormap, Overlay, Particles, Style,
 };
@@ -86,7 +88,7 @@ impl Gas {
             box_size,
             cutoff: 2.5,
             dt: DT,
-            thermostat: None,
+            thermostat: Thermostat::None,
             shifted_force: true,
             skin: 0.3,
         };

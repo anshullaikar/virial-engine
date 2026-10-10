@@ -3,7 +3,9 @@
 //! virial coefficient. Skipped (with a message) on machines with no GPU.
 
 use virial_gpu::Compute;
-use virial_particles::lennard_jones::{Langevin, LennardJones, Particle, Settings, lattice};
+use virial_particles::lennard_jones::{
+    Langevin, LennardJones, NoseHoover, Particle, Settings, Thermostat, lattice,
+};
 
 fn gpu() -> Option<Compute> {
     match pollster::block_on(Compute::new()) {
@@ -69,7 +71,7 @@ fn cell_grid_finds_every_pair() {
         box_size: 11.0,
         cutoff: 2.5,
         dt: 0.002,
-        thermostat: None,
+        thermostat: Thermostat::None,
         shifted_force: false,
         skin: 0.3,
     };
@@ -165,7 +167,7 @@ fn gas_relaxes_to_maxwell_boltzmann_at_constant_energy() {
         box_size,
         cutoff: 2.5,
         dt: 0.004,
-        thermostat: None,
+        thermostat: Thermostat::None,
         shifted_force: false,
         skin: 0.3,
     };
@@ -244,7 +246,7 @@ fn dilute_gas_obeys_the_ideal_gas_law_and_virial_expansion() {
         box_size,
         cutoff: 2.5,
         dt: 0.005,
-        thermostat: Some(thermostat),
+        thermostat: Thermostat::Langevin(thermostat),
         shifted_force: false,
         skin: 0.3,
     };
@@ -295,7 +297,7 @@ fn thermostatted_reruns_are_bit_identical() {
         box_size: 16.0,
         cutoff: 2.5,
         dt: 0.004,
-        thermostat: Some(Langevin {
+        thermostat: Thermostat::Langevin(Langevin {
             temperature: 1.5,
             friction: 0.5,
             seed: 3,
@@ -317,4 +319,59 @@ fn thermostatted_reruns_are_bit_identical() {
     let b = run();
     assert!(a.0 == b.0, "states differ between runs");
     assert_eq!((a.1, a.2), (b.1, b.2), "measurements differ between runs");
+}
+
+#[test]
+fn nose_hoover_samples_the_canonical_ensemble() {
+    let Some(gpu) = gpu() else { return };
+    let n = 1000;
+    let temperature = 1.5;
+    let box_size = (n as f64 / 0.3).cbrt();
+    let settings = Settings {
+        box_size,
+        cutoff: 2.5,
+        dt: 0.002,
+        thermostat: Thermostat::NoseHoover(NoseHoover {
+            temperature,
+            period: 0.5,
+        }),
+        shifted_force: true,
+        skin: 0.3,
+    };
+    // Start too cold: the thermostat has to bring it up
+    let mut sim = LennardJones::new(
+        &gpu.device,
+        &gpu.queue,
+        &lattice(n, box_size, 0.5, 21),
+        settings,
+    );
+    sim.run(10_000);
+    let dof = 3.0 * n as f64 - 3.0;
+    let start = sim.measure_now();
+    let mut temps = Vec::new();
+    for _ in 0..2000 {
+        sim.run(20);
+        temps.push(sim.measure_now().temperature(dof));
+    }
+    let end = sim.measure_now();
+    let mean = temps.iter().sum::<f64>() / temps.len() as f64;
+    let var = temps.iter().map(|t| (t - mean).powi(2)).sum::<f64>() / (temps.len() - 1) as f64;
+    let ratio = var / (mean * mean);
+    let canonical = 2.0 / dof;
+    let drift = (end.extended_energy() - start.extended_energy()) / start.extended_energy().abs();
+    println!(
+        "Nose-Hoover, N = {n}, T = {temperature}: mean T {mean:.4}; Var(T)/T^2 = {ratio:.3e} vs canonical 2/g = {canonical:.3e} \
+         ({:+.1}%); extended energy drift {drift:.2e} over 40,000 steps",
+        (ratio / canonical - 1.0) * 100.0
+    );
+    assert!(
+        (mean / temperature - 1.0).abs() < 0.01,
+        "mean temperature off target"
+    );
+    assert!(
+        (ratio / canonical - 1.0).abs() < 0.15,
+        "fluctuations don't match the canonical ensemble"
+    );
+    assert!(drift.abs() < 1e-4, "extended energy not conserved");
+    assert_eq!(end.list_overflow, 0);
 }
