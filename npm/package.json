@@ -1,5 +1,5 @@
 {
-  "name": "virial",
+  "name": "@virial/engine",
   "version": "0.0.1",
   "description": "GPU physics simulation in Rust and WebGPU, in the browser and natively. Early development.",
   "license": "(MIT OR Apache-2.0)",
@@ -10,6 +10,20 @@
     "url": "git+https://github.com/anshullaikar/virial-engine.git",
     "directory": "npm"
   },
-  "keywords": ["physics", "simulation", "webgpu", "gpu", "wasm", "rust"],
-  "files": ["README.md", "LICENSE-MIT", "LICENSE-APACHE"]
+  "keywords": [
+    "physics",
+    "simulation",
+    "webgpu",
+    "gpu",
+    "wasm",
+    "rust"
+  ],
+  "files": [
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }

@@ -96,7 +96,7 @@ Run the GPU tests with `cargo test --release -p virial-precision -p virial-parti
 | `crates/virial-particles` | GPU particle dynamics: gravity, velocity Verlet, energy and momentum measurements |
 | `crates/virial-reference` | CPU reference solvers in f64 (and f32 for comparison), used by tests |
 | `examples/` | Example scenes, each with an `index.html` for the browser |
-| `npm/` | The `virial` npm package (name reserved; browser build to come) |
+| `npm/` | The `@virial/engine` npm package (name reserved; browser build to come) |
 | `scripts/build-web.sh` | Builds an example for the browser and reports its gzipped size |
 | `scripts/serve.py` | Local server that disables caching, so rebuilt wasm always loads |
 
