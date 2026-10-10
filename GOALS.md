@@ -39,6 +39,11 @@ When two of these conflict, the higher one wins.
   and estimates are labelled as such.
 - **Measure the error, don't hide it.** Energy drift and momentum are shown on
   screen and written to data files.
+- **Measure browser speed in a foreground tab.** Chrome throttles background
+  windows and tabs to a few frames per second, which once made the galaxies
+  look 10× slower than they are. Bring the window to the front (and keep it
+  there) before reading fps, GPU timings or steps per second, and say in the
+  result that it was measured in the foreground.
 - **Test precision tricks on the GPU, not just the CPU.** Metal compiles in
   fast-math mode and has silently undone two of them (double-float maths and
   the fixed-point split). WGSL that depends on exact float behaviour goes
@@ -89,8 +94,6 @@ more steps per second; wasm at most 3 MB gzipped.
   holds energy to about 1e-6 before the galaxies meet, but drift grows to
   about 5e-4 by t = 88 as stars swing close past the cores (dt 0.005,
   softening 0.05). Next lever: smaller or adaptive (block) time steps.
-- Chrome matches native speed (galaxies at 8,192 bodies: 60 fps) only when
-  its window is in front; a background window is throttled to a few fps.
 - **Precise measurements are expensive:** about ten force passes (213 ms at
   16k bodies). Plan: snapshot the state, then measure the snapshot spread over
   several frames.

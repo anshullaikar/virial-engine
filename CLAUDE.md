@@ -13,5 +13,9 @@
 - Before committing: `cargo fmt --all`, then `cargo clippy --workspace
   --all-targets -- -D warnings` for native and again with
   `--target wasm32-unknown-unknown`.
+- Browser speed only counts from a foreground tab in a front window: Chrome
+  throttles anything else. Before measuring, check `document.visibilityState`
+  is `visible` and `requestAnimationFrame` runs near the display rate (about
+  60 per second); if not, ask for the window to be brought to the front.
 - Web builds: `scripts/build-web.sh <example>`, served by
   `python3 scripts/serve.py` at http://127.0.0.1:5173/examples/<example>/.
