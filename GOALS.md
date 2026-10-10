@@ -66,6 +66,7 @@ When two of these conflict, the higher one wins.
 | Physics scope, in order | Classical mechanics (particles: gravity, molecular dynamics, granular) → thermodynamics → quantum motion |
 | Games | Later, separate branch. AVBD rigid bodies live there because they trade energy for stability |
 | Showcase videos | Gas reaching equilibrium, galaxy collision, granular avalanche |
+| Data output | Per-frame measurements as **CSV** with 17 significant digits; per-particle snapshots as NumPy **`.npy`** (exact binary, no dependencies, loads with `np.load`); a **`run.json`** per run with scene settings, time step, GPU, Virial version and git commit. Parquet or HDF5 only if a real need appears |
 
 ## 0.1.0 milestones
 
