@@ -82,7 +82,7 @@ When two of these conflict, the higher one wins.
 | 4 | Particle dynamics (gravity, Verlet, measurements) | Done: Kepler energy exact to 13 digits, drift 3.4e-7 over 100 orbits, reruns bit-identical |
 | 5 | Renderer for science (sprites, colour maps, cameras, readouts) | Started: galaxies example has glowing sprites and an orbit camera |
 | 6 | Video and data export on a simulation clock | Done natively: `record=<dir>` renders MP4 (ffmpeg) plus frames.csv, measurements.csv, .npy snapshots and run.json; reruns give identical frame hashes. 60 s 1080p60 galaxy collision rendered in 7.5 min. Browser offline export (WebCodecs) still to do |
-| 7 | Bridge to thermodynamics | Lennard-Jones gas done: ideal gas law within 0.76%, matches the virial expansion within 1.3 standard errors, relaxes to Maxwell-Boltzmann (KS 0.003) at constant energy. Still to do: Nosé–Hoover thermostat, granular contact (Hertz) for the avalanche |
+| 7 | Bridge to thermodynamics | Done. Lennard-Jones gas: ideal gas law within 0.76%, virial expansion within 1.3 standard errors, relaxes to Maxwell-Boltzmann (KS 0.003) at constant energy. Granular contact (SI units): Hertz contact time exact to 5 digits, a settled pile carries its weight to 0.009%. Not done: Nosé–Hoover thermostat (Langevin covers the tests); grain rotation and friction memory |
 | 8 | Validation report and release | Not started |
 
 Release targets (estimates until measured): energy drift below 1e-6 over 10⁶
@@ -100,6 +100,9 @@ more steps per second; wasm at most 3 MB gzipped.
   after switching force sums to per-tile f32 plus double-float totals (before
   that, drift stalled at 1.7e-4 however small the step). The scene now
   defaults to dt 0.0025. Next lever: adaptive (block) time steps.
+- **Grains don't rotate and friction has no memory**, so friction resists
+  sliding but can't hold a steep slope still indefinitely. Needed for angle of
+  repose studies.
 - **Lennard-Jones energy drift** is 4e-5 over 15,000 steps because the force
   jumps to zero at the cutoff; a force-shifted potential would fix it.
 - **Precise measurements are expensive:** about ten force passes (213 ms at

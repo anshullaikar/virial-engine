@@ -331,8 +331,12 @@ impl LennardJones {
             immediate_size: 0,
         });
         let source = format!(
-            "{}\n{WGSL_FIXED}\n{WGSL_DF64}",
-            include_str!("lennard_jones.wgsl")
+            "{}
+{}
+{WGSL_FIXED}
+{WGSL_DF64}",
+            include_str!("lennard_jones.wgsl"),
+            include_str!("grid.wgsl")
         );
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("lennard-jones"),

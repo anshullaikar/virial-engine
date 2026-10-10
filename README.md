@@ -9,7 +9,7 @@ Named after the virial theorem, which links a system's kinetic and potential
 energy. The same theorem describes galaxies settling into equilibrium and gives
 a gas its pressure.
 
-Status: steps 1–4 and 6 done, step 7 well under way, of 8 towards 0.1.0. Virial runs scenes in a window or a browser
+Status: steps 1–4, 6 and 7 done, of 8 towards 0.1.0. Virial runs scenes in a window or a browser
 canvas through WebGPU (browser) or Metal / Vulkan / DX12 (native), with mouse
 and keyboard input, a stats panel and GPU pass timings.
 
@@ -97,6 +97,18 @@ numbers. Validation on an M1:
 | Dilute gas (density 0.01, T = 2) | PV/NkT = 0.99244 ± 0.00012: within 0.76% of the ideal gas law, and within 1.3 standard errors of the virial expansion 1 + B₂ρ = 0.99228 |
 | Gas starting with every particle at the same speed, no thermostat | Kolmogorov–Smirnov distance from Maxwell–Boltzmann 0.61 → 0.003 after 60 time units, energy drift 4e-5 |
 | Thermostatted reruns | Bit-identical |
+
+## Granular materials
+
+`virial_particles::granular` simulates grains in SI units: Hertz contact with
+viscoelastic damping, Coulomb friction, gravity, a tiltable floor and walls.
+Validation on an M1:
+
+| Check | Result |
+|---|---|
+| Elastic head-on collision (0.5 m/s, 2.5 mm glass beads) | Contact time 8.7732e-4 s, Hertz theory 8.7732e-4 s; restitution 1.000000; momentum exactly conserved |
+| Pile of 2304 grains after settling | Floor and walls carry 3.732933 N against a weight of 3.732605 N (+0.009%) |
+| Reruns | Bit-identical |
 
 Run all GPU tests with `cargo test --release` (they skip on machines without
 a GPU), or everything with `scripts/check.sh`.
