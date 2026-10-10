@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "examples/*"]
+
+[workspace.package]
+# 0.0.x until the 0.1.0 release
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Anshul Laikar"]
+rust-version = "1.88"
+repository = "https://github.com/anshullaikar/virial-engine"
+homepage = "https://github.com/anshullaikar/virial-engine"
+keywords = ["physics", "simulation", "webgpu", "gpu", "wgpu"]
+categories = ["simulation", "science", "graphics", "wasm"]
+
+[workspace.dependencies]
+virial = { path = "crates/virial", version = "0.0.1" }
+virial-gpu = { path = "crates/virial-gpu", version = "0.0.1" }
+
+# No GLES/WebGL backends: the physics needs compute shaders
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "metal", "vulkan", "dx12", "webgpu"] }
+winit = "0.30.13"
+log = "0.4.34"
+pollster = "1.0.1"
+env_logger = "0.11.11"
+
+# wasm-bindgen must match the installed wasm-bindgen-cli exactly
+wasm-bindgen = "=0.2.128"
+wasm-bindgen-futures = "=0.4.78"
+web-sys = "=0.3.105"
+console_error_panic_hook = "0.1.7"
+console_log = "1.1.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

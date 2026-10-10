@@ -1,0 +1,10 @@
+[package]
+name = "triangle"
+description = "Milestone 1: one binary that draws a triangle in the browser and natively"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+virial.workspace = true
