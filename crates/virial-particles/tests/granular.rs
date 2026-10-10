@@ -5,7 +5,7 @@ use virial_gpu::Compute;
 use virial_particles::granular::{Grain, Granular, Settings, block};
 
 fn gpu() -> Option<Compute> {
-    match pollster::block_on(Compute::new()) {
+    match pollster::block_on(Compute::hardware()) {
         Ok(gpu) => Some(gpu),
         Err(error) => {
             eprintln!("skipped: no GPU ({error})");

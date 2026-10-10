@@ -8,7 +8,7 @@ use virial_particles::lennard_jones::{
 };
 
 fn gpu() -> Option<Compute> {
-    match pollster::block_on(Compute::new()) {
+    match pollster::block_on(Compute::hardware()) {
         Ok(gpu) => Some(gpu),
         Err(error) => {
             eprintln!("skipped: no GPU ({error})");

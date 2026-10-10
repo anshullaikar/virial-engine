@@ -6,7 +6,7 @@ use virial_precision::{Df64, WGSL_DF64, WGSL_FIXED, fixed};
 use wgpu::util::DeviceExt;
 
 fn gpu() -> Option<Compute> {
-    match pollster::block_on(Compute::new()) {
+    match pollster::block_on(Compute::hardware()) {
         Ok(gpu) => Some(gpu),
         Err(error) => {
             eprintln!("skipped: no GPU ({error})");

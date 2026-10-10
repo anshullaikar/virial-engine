@@ -9,7 +9,7 @@ use virial_particles::lennard_jones::{LennardJones, Settings, Thermostat, lattic
 #[test]
 #[ignore = "study: run explicitly"]
 fn lj_timestep_study() {
-    let Ok(gpu) = pollster::block_on(Compute::new()) else {
+    let Ok(gpu) = pollster::block_on(Compute::hardware()) else {
         eprintln!("skipped: no GPU");
         return;
     };
@@ -42,7 +42,7 @@ fn lj_timestep_study() {
 #[test]
 #[ignore = "benchmark: run explicitly"]
 fn lj_speed() {
-    let Ok(gpu) = pollster::block_on(Compute::new()) else {
+    let Ok(gpu) = pollster::block_on(Compute::hardware()) else {
         eprintln!("skipped: no GPU");
         return;
     };
@@ -80,7 +80,7 @@ fn lj_speed() {
 #[test]
 #[ignore = "profiling: run explicitly"]
 fn lj_rebuild_cost() {
-    let Ok(gpu) = pollster::block_on(Compute::new()) else {
+    let Ok(gpu) = pollster::block_on(Compute::hardware()) else {
         return;
     };
     let n = 1_048_576usize;

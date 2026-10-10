@@ -44,9 +44,10 @@ impl RecordSettings {
     }
 }
 
-/// Whether a GPU is available for offline rendering (tests use this to skip).
+/// Whether a hardware GPU is available (tests use this to skip on machines
+/// with none, or only a software adapter).
 pub fn gpu_available() -> bool {
-    pollster::block_on(virial_gpu::Compute::new()).is_ok()
+    pollster::block_on(virial_gpu::Compute::hardware()).is_ok()
 }
 
 /// What a recording produced.

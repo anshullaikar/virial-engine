@@ -506,7 +506,7 @@ mod tests {
     #[test]
     #[ignore = "study: run explicitly"]
     fn timestep_study() {
-        let Ok(gpu) = pollster::block_on(virial_gpu::Compute::new()) else {
+        let Ok(gpu) = pollster::block_on(virial_gpu::Compute::hardware()) else {
             eprintln!("skipped: no GPU");
             return;
         };

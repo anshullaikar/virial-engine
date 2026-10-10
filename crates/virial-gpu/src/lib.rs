@@ -27,6 +27,8 @@ pub enum GpuError {
     NoAdapter(wgpu::RequestAdapterError),
     LimitsTooLow(String),
     Device(wgpu::RequestDeviceError),
+    /// Only a software (CPU) adapter was found
+    SoftwareOnly(String),
 }
 
 impl fmt::Display for GpuError {
@@ -42,6 +44,7 @@ impl fmt::Display for GpuError {
                 "This GPU is below WebGPU's default limits ({which}). Try another browser or device."
             ),
             GpuError::Device(e) => write!(f, "The GPU refused to start: {e}"),
+            GpuError::SoftwareOnly(name) => write!(f, "Only a software GPU was found ({name})"),
         }
     }
 }

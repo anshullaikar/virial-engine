@@ -26,7 +26,7 @@ fn bodies(n: usize) -> Vec<Body> {
 #[test]
 #[ignore = "benchmark: run explicitly"]
 fn steps_per_second() {
-    let Ok(gpu) = pollster::block_on(Compute::new()) else {
+    let Ok(gpu) = pollster::block_on(Compute::hardware()) else {
         eprintln!("skipped: no GPU");
         return;
     };
@@ -58,7 +58,7 @@ fn steps_per_second() {
 #[test]
 #[ignore = "benchmark: run explicitly"]
 fn measurement_cost() {
-    let Ok(gpu) = pollster::block_on(Compute::new()) else {
+    let Ok(gpu) = pollster::block_on(Compute::hardware()) else {
         return;
     };
     for n in [8_192usize, 16_384] {

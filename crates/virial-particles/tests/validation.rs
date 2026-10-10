@@ -6,7 +6,7 @@ use virial_particles::{Body, Gravity, NBody};
 use virial_reference as reference;
 
 fn gpu() -> Option<Compute> {
-    match pollster::block_on(Compute::new()) {
+    match pollster::block_on(Compute::hardware()) {
         Ok(gpu) => Some(gpu),
         Err(error) => {
             eprintln!("skipped: no GPU ({error})");

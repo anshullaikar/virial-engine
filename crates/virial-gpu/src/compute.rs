@@ -30,6 +30,17 @@ impl Compute {
         })
     }
 
+    /// Like [`Compute::new`], but refuses software adapters (such as WARP on
+    /// Windows CI machines): tests that check GPU behaviour skip there rather
+    /// than run for minutes on an emulator.
+    pub async fn hardware() -> Result<Self, GpuError> {
+        let gpu = Self::new().await?;
+        if gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu {
+            return Err(GpuError::SoftwareOnly(gpu.adapter.get_info().name));
+        }
+        Ok(gpu)
+    }
+
     /// Copies `buffer` (which needs `COPY_SRC`) back to the CPU, waiting for
     /// the GPU. Native only: the browser can't block.
     #[cfg(not(target_arch = "wasm32"))]
