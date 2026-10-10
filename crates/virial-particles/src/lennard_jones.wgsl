@@ -1,4 +1,4 @@
-// Lennard-Jones particles in a periodic cubic box, in reduced units
+// Lennard-Jones particles in a periodic rectangular box, in reduced units
 // (sigma = epsilon = mass = k_B = 1). Short-range forces through a cell grid:
 // each step bins particles into cells of side >= cutoff, prefix-sums the cell
 // counts, scatters particle indices into cell order, then sorts each cell by
@@ -36,14 +36,15 @@
 // Prepended at build time: WGSL_FIXED and WGSL_DF64 come after this file.
 
 struct Params {
+    // Box sides, cell sides and cells along each axis, in xyz
+    box_size: vec4f,
+    cell_size: vec4f,
+    cells: vec4u,
     count: u32,
-    cells: u32,
     total_cells: u32,
     // 0: constant energy (velocity Verlet), 1: Langevin thermostat (BAOAB),
     // 2: Nose-Hoover thermostat
     thermostat: u32,
-    box_size: f32,
-    cell_size: f32,
     rc2: f32,
     // U(r_c), subtracted so the potential is continuous at the cutoff
     shift: f32,
@@ -68,7 +69,12 @@ struct Params {
     // Nose-Hoover: g k T (g degrees of freedom) and the thermostat mass Q
     nh_gkt: f32,
     nh_q: f32,
+    // Profiles along z: number of slabs and their width
+    profile_bins: u32,
+    bin_width: f32,
     _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -82,6 +88,14 @@ struct Params {
 // Workgroup counts for the rebuild kernels: (cells, 1, 1), (particles, 1, 1),
 // (1, 1, 1), each zeroed when no rebuild is needed
 @group(0) @binding(7) var<storage, read_write> dispatch: array<u32>;
+
+fn grid_cells() -> vec3u {
+    return params.cells.xyz;
+}
+
+fn grid_cell_size() -> vec3f {
+    return params.cell_size.xyz;
+}
 
 // Slots in virial_fixed past the measurement accumulators
 const MAX_DISPLACEMENT: u32 = 16u;
@@ -161,14 +175,20 @@ fn gaussian2(state: ptr<function, u32>) -> vec2f {
 
 // ---- Step part 1: half kick and drift (with the Langevin step if on) ----
 
-fn wrap(x: vec2f) -> vec2f {
+fn wrap(x: vec2f, side: f32) -> vec2f {
     var y = x;
-    if y.x >= params.box_size {
-        y = df_add_f(y, -params.box_size);
+    if y.x >= side {
+        y = df_add_f(y, -side);
     } else if y.x < 0.0 {
-        y = df_add_f(y, params.box_size);
+        y = df_add_f(y, side);
     }
     return y;
+}
+
+// Nearest periodic image of a separation
+fn nearest(d: vec3f) -> vec3f {
+    let side = params.box_size.xyz;
+    return d - side * round(d / side);
 }
 
 @compute @workgroup_size(256)
@@ -228,7 +248,7 @@ fn step_particle(i: u32) {
         } else {
             x = df_add(x, df_mul_f(v, params.dt));
         }
-        x = wrap(x);
+        x = wrap(x, params.box_size[k]);
         vh[k] = v.x;
         vl[k] = v.y;
         ph[k] = x.x;
@@ -241,8 +261,7 @@ fn step_particle(i: u32) {
     store_packed(i, ph.xyz, pl.xyz);
     // Squared displacement since the last list build (nearest image), as
     // bits: for non-negative floats, integer order matches float order
-    var moved = ph.xyz - state[5u * params.segment + i].xyz;
-    moved -= params.box_size * round(moved / params.box_size);
+    let moved = nearest(ph.xyz - state[5u * params.segment + i].xyz);
     atomicMax(&group_moved, bitcast<u32>(dot(moved, moved)));
 }
 
@@ -425,8 +444,9 @@ fn build_list(@builtin(global_invocation_id) id: vec3u) {
     let xh = state[i].xyz;
     let xl = state[params.segment + i].xyz;
     let c = ints[i];
-    let n = params.cells;
-    let cc = vec3i(i32(c % n), i32((c / n) % n), i32(c / (n * n)));
+    let n = vec3i(params.cells.xyz);
+    let ci = i32(c);
+    let cc = vec3i(ci % n.x, (ci / n.x) % n.y, ci / (n.x * n.y));
     // Transposed layout: the count at [i], entry k at [segment * (k + 1) + i],
     // so neighbouring threads read neighbouring words
     let seg = params.segment;
@@ -434,7 +454,7 @@ fn build_list(@builtin(global_invocation_id) id: vec3u) {
     for (var dz = -1; dz <= 1; dz++) {
         for (var dy = -1; dy <= 1; dy++) {
             for (var dx = -1; dx <= 1; dx++) {
-                let nc = vec3u((cc + vec3i(dx, dy, dz) + vec3i(i32(n))) % vec3i(i32(n)));
+                let nc = vec3u((cc + vec3i(dx, dy, dz) + n) % n);
                 let cell = cell_index(nc);
                 for (var s = cells[cell]; s < cells[cell + 1u]; s++) {
                     let j = ints[params.segment + s];
@@ -442,8 +462,7 @@ fn build_list(@builtin(global_invocation_id) id: vec3u) {
                         continue;
                     }
                     let pj = state[6u * params.segment + j];
-                    var d = (pj.xyz - xh) + (unpack_lo(pj.xyz, pj.w) - xl);
-                    d -= params.box_size * round(d / params.box_size);
+                    let d = nearest((pj.xyz - xh) + (unpack_lo(pj.xyz, pj.w) - xl));
                     if dot(d, d) < params.list_r2 {
                         if found < params.capacity {
                             neighbors[seg * (found + 1u) + i] = j;
@@ -472,30 +491,33 @@ fn interactions(i: u32, energies: bool) -> Pair {
     for (var k = 0u; k < count; k++) {
         let j = neighbors[seg * (k + 1u) + i];
         let pj = state[6u * params.segment + j];
-        var d = (pj.xyz - xh) + (unpack_lo(pj.xyz, pj.w) - xl);
-        // Nearest periodic image
-        d -= params.box_size * round(d / params.box_size);
+        let d = nearest((pj.xyz - xh) + (unpack_lo(pj.xyz, pj.w) - xl));
         let r2 = dot(d, d);
         if r2 < params.rc2 {
-            let inv2 = 1.0 / r2;
-            let s6 = inv2 * inv2 * inv2;
-            let s12 = s6 * s6;
-            // r . F for this pair, and the force on i
-            var rf = 24.0 * (2.0 * s12 - s6);
-            var u = 4.0 * (s12 - s6) - params.shift;
-            if params.force_shift != 0.0 {
-                let r = sqrt(r2);
-                rf -= r * params.force_shift;
-                u += (r - sqrt(params.rc2)) * params.force_shift;
-            }
-            out.a -= d * (rf * inv2);
+            let p = pair(r2);
+            out.a -= d * (p.x / r2);
             if energies {
-                out.pe = df_add_f(out.pe, 0.5 * u);
-                out.w = df_add_f(out.w, 0.5 * rf);
+                out.pe = df_add_f(out.pe, 0.5 * p.y);
+                out.w = df_add_f(out.w, 0.5 * p.x);
             }
         }
     }
     return out;
+}
+
+// r . F and the potential energy of a pair at squared distance r2 < rc2
+fn pair(r2: f32) -> vec2f {
+    let inv2 = 1.0 / r2;
+    let s6 = inv2 * inv2 * inv2;
+    let s12 = s6 * s6;
+    var rf = 24.0 * (2.0 * s12 - s6);
+    var u = 4.0 * (s12 - s6) - params.shift;
+    if params.force_shift != 0.0 {
+        let r = sqrt(r2);
+        rf -= r * params.force_shift;
+        u += (r - sqrt(params.rc2)) * params.force_shift;
+    }
+    return vec2f(rf, u);
 }
 
 @compute @workgroup_size(256)
@@ -563,4 +585,108 @@ fn measure(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_i
     }
     workgroupBarrier();
     fixed_wg_flush(li, 0u);
+}
+
+// ---- Profiles along z ----
+//
+// Bound with the profile buffer in place of virial_fixed, so the fixed-point
+// helpers add into it. Every call adds one sample to the running sums. Slab b
+// has PROFILE_SLOTS slots from b * PROFILE_SLOTS: particle count, then
+// m v_a^2 for a = x, y, z, then the virial tensor's diagonal W_aa, then
+// potential energy. After the slabs come three slots of whole-box totals
+// of W_aa, summed pair by pair rather than through the slabs.
+//
+// Kinetic terms and potential energy go to the slab holding the particle
+// (half of each pair's energy to each end). The virial follows Irving and
+// Kirkwood: each pair's share is spread over the slabs that the line between
+// the two particles crosses, in proportion to the length inside each. That
+// makes the normal pressure P_zz(z) exactly constant across an interface in
+// mechanical equilibrium; other contours don't.
+
+const PROFILE_SLOTS: u32 = 8u;
+
+fn slab_of(z: f32) -> u32 {
+    return u32(clamp(i32(floor(z / params.bin_width)), 0, i32(params.profile_bins) - 1));
+}
+
+fn profile_add(slab: u32, quantity: u32, x: f32) {
+    fixed_add(slab * PROFILE_SLOTS + quantity, x);
+}
+
+@compute @workgroup_size(256)
+fn profile(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_index) li: u32) {
+    df_init(params.one);
+    fixed_wg_clear(li);
+    workgroupBarrier();
+    let i = id.x;
+    var total = vec3f(0.0);
+    if i < params.count {
+        let seg = params.segment;
+        let xh = state[i].xyz;
+        let xl = state[seg + i].xyz;
+        let home = slab_of(xh.z);
+        let v = state[2u * seg + i].xyz + state[3u * seg + i].xyz;
+        profile_add(home, 0u, 1.0);
+        for (var k = 0u; k < 3u; k++) {
+            profile_add(home, 1u + k, v[k] * v[k]);
+        }
+        let bins = i32(params.profile_bins);
+        let width = params.bin_width;
+        var pe = 0.0;
+        let count = neighbors[i];
+        for (var k = 0u; k < count; k++) {
+            let j = neighbors[seg * (k + 1u) + i];
+            let pj = state[6u * seg + j];
+            let d = nearest((pj.xyz - xh) + (unpack_lo(pj.xyz, pj.w) - xl));
+            let r2 = dot(d, d);
+            if r2 >= params.rc2 {
+                continue;
+            }
+            let p = pair(r2);
+            pe += 0.5 * p.y;
+            // This particle's half of the pair's virial tensor
+            let w = 0.5 * d * d * (p.x / r2);
+            total += w;
+            let lo = xh.z + min(d.z, 0.0);
+            let hi = xh.z + max(d.z, 0.0);
+            let length = hi - lo;
+            if length < 1e-6 * width {
+                for (var a = 0u; a < 3u; a++) {
+                    profile_add(home, 4u + a, w[a]);
+                }
+                continue;
+            }
+            // Slabs from the one holding lo to the one holding hi; the line
+            // may cross the periodic boundary, so slab numbers wrap. The last
+            // slab gets what's left, so the shares add up to exactly one.
+            var b = i32(floor(lo / width));
+            var left = 1.0;
+            loop {
+                let last = f32(b + 1) * width >= hi;
+                let start = max(lo, f32(b) * width);
+                let end = min(hi, f32(b + 1) * width);
+                var share = select((end - start) / length, left, last);
+                share = max(share, 0.0);
+                left -= share;
+                let slab = u32(((b % bins) + bins) % bins);
+                for (var a = 0u; a < 3u; a++) {
+                    profile_add(slab, 4u + a, w[a] * share);
+                }
+                if last {
+                    break;
+                }
+                b += 1;
+            }
+        }
+        profile_add(home, 7u, pe);
+    }
+    for (var a = 0u; a < 3u; a++) {
+        fixed_wg_add(a, total[a]);
+    }
+    workgroupBarrier();
+    if li < 3u {
+        let low = atomicLoad(&virial_fixed_wg[2u * li]);
+        let high = atomicLoad(&virial_fixed_wg[2u * li + 1u]);
+        fixed_add_parts(params.profile_bins * PROFILE_SLOTS + li, vec2u(low, high));
+    }
 }

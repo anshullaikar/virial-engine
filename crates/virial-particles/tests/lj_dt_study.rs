@@ -19,12 +19,13 @@ fn lj_timestep_study() {
     for shifted_force in [false, true] {
         for dt in [0.004, 0.002, 0.001] {
             let settings = Settings {
-                box_size,
+                box_size: [box_size; 3],
                 cutoff: 2.5,
                 dt,
                 thermostat: Thermostat::None,
                 shifted_force,
                 skin: 0.3,
+                profile_bins: 0,
             };
             let mut sim = LennardJones::new(&gpu.device, &gpu.queue, &particles, settings);
             let start = sim.measure_now().energy();
@@ -50,12 +51,13 @@ fn lj_speed() {
         // Density 0.4 keeps a million molecules within the cell grid's limit
         let box_size = (n as f64 / 0.4).cbrt();
         let settings = Settings {
-            box_size,
+            box_size: [box_size; 3],
             cutoff: 2.5,
             dt: 0.002,
             thermostat: Thermostat::None,
             shifted_force: true,
             skin: 0.3,
+            profile_bins: 0,
         };
         let mut sim = LennardJones::new(
             &gpu.device,
@@ -88,12 +90,13 @@ fn lj_rebuild_cost() {
     let particles = lattice(n, box_size, 1.5, 3);
     for skin in [0.001, 0.3, 1.0] {
         let settings = Settings {
-            box_size,
+            box_size: [box_size; 3],
             cutoff: 2.5,
             dt: 0.002,
             thermostat: Thermostat::None,
             shifted_force: true,
             skin,
+            profile_bins: 0,
         };
         let mut sim = LennardJones::new(&gpu.device, &gpu.queue, &particles, settings);
         sim.run(5);

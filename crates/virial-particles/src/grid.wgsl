@@ -1,20 +1,22 @@
-// Cell grid shared by the short-range solvers. Bins particles into cubic
+// Cell grid shared by the short-range solvers. Bins particles into box-shaped
 // cells, prefix-sums the counts, scatters particle indices into cell order
 // and sorts each cell by particle index, so neighbour loops visit pairs in
 // the same order on every run.
 //
-// The including shader declares `params` (with count, cells, total_cells,
-// cell_size, segment), `state` (position hi parts at state[i]),
-// `cell_count`, `cells` and `ints`, laid out as in lennard_jones.wgsl.
+// The including shader declares `params` (with count, total_cells,
+// segment), `state` (position hi parts at state[i]), `cell_count`, `cells`
+// and `ints`, laid out as in lennard_jones.wgsl, and two functions:
+// grid_cells() (cells along each axis) and grid_cell_size() (their sides).
 
 fn cell_coords(x: vec3f) -> vec3u {
-    let c = vec3i(floor(x / params.cell_size));
-    let m = i32(params.cells) - 1;
-    return vec3u(clamp(c, vec3i(0), vec3i(m)));
+    let c = vec3i(floor(x / grid_cell_size()));
+    let m = vec3i(grid_cells()) - 1;
+    return vec3u(clamp(c, vec3i(0), m));
 }
 
 fn cell_index(c: vec3u) -> u32 {
-    return (c.z * params.cells + c.y) * params.cells + c.x;
+    let n = grid_cells();
+    return (c.z * n.y + c.y) * n.x + c.x;
 }
 
 @compute @workgroup_size(256)

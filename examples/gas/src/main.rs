@@ -85,12 +85,13 @@ impl Gas {
     fn simulation(gpu: &Gpu, n: usize, density: f64, temperature: f64) -> LennardJones {
         let box_size = (n as f64 / density).cbrt();
         let settings = Settings {
-            box_size,
+            box_size: [box_size; 3],
             cutoff: 2.5,
             dt: DT,
             thermostat: Thermostat::None,
             shifted_force: true,
             skin: 0.3,
+            profile_bins: 0,
         };
         LennardJones::new(
             &gpu.device,

@@ -12,6 +12,19 @@
 - Tested against exact solutions: free packet, coherent state, ground state,
   tunnelling, double-slit fringes (see docs/VALIDATION.md).
 
+### Liquid–vapour coexistence (`virial-particles`, `LennardJones`)
+- Rectangular periodic boxes. **Breaking:** `Settings::box_size` is now
+  `[f64; 3]` and `LennardJones::box_size()` returns the three sides.
+- Profiles along z (`Settings::profile_bins`, `sample_profile`,
+  `read_profile`): density, kinetic temperature, potential energy and the
+  diagonal pressure tensor per slab, with the virial spread along each pair's
+  line (Irving–Kirkwood) so the normal pressure is flat through interfaces.
+  Summed in fixed point over samples: reruns give identical bits.
+- `Profile::surface_tension` from the whole box's pressure anisotropy.
+- `lattice_box`: a starting lattice for a box of any shape.
+- Tested against NIST coexistence data and published surface tension (see
+  docs/VALIDATION.md).
+
 ### Examples
 - `double-slit`: a wave packet through two slits, drawn as density or phase,
   with the screen building up the interference pattern.

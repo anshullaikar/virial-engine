@@ -104,7 +104,8 @@ more steps per second; wasm at most 3 MB gzipped.
 | What | Status |
 |---|---|
 | Quantum motion (`virial-quantum`): 2D time-dependent Schrödinger equation, split-operator with GPU FFTs, absorbing edges, imaginary-time ground states, a detector screen | Done, unreleased. Free packet, coherent state, harmonic ground state, tunnelling (Eckart barrier, within 0.07%) and double-slit dark fringes (within 0.02 wavelengths) all match exact results. Example and video: `double-slit` |
-| Thermodynamics: liquid–gas coexistence, heat conduction (Fourier's law) | Next |
+| Liquid–gas coexistence: rectangular boxes, profiles along z (density, temperature, Irving–Kirkwood pressure tensor), surface tension | Done, unreleased. A slab at T = 0.7 matches NIST's coexistence densities and vapour pressure for the force-shifted potential within 1.8 standard errors, with the normal pressure flat through the interfaces; surface tension of the truncated and shifted potential is 0.6% from Vrabec et al. |
+| Condensation video, then heat conduction (Fourier's law) | Next |
 | Browser video export (WebCodecs) | To do |
 
 ## Known gaps
@@ -134,6 +135,13 @@ more steps per second; wasm at most 3 MB gzipped.
   bodies). `NBody::measure_gradually` snapshots the state and spreads the work
   over frames in chunks of 1024 bodies, with a result bit-identical to a
   complete measurement, so the preview no longer pauses.
+- **Small systems step slowly for their size**: a Nosé–Hoover step of
+  15,600 molecules takes 0.60 ms on an M1 Air. Probably the fixed cost of
+  about 16 dispatches per step (not yet measured). A profile sample (240 slabs) costs about 4 ms; sampled every
+  20 steps that adds 25%.
+- **The coexistence tests are slow**: 220,000 steps of 15,600 molecules
+  each, about 3.5 minutes alone and 10.7 minutes for the two side by side.
+  `scripts/check.sh` now takes about 18 minutes on an M1 Air.
 - **Safari** is untested.
 - **The quantum FFT is bandwidth-bound**: a 1024² step takes 15 ms (512²: 2.2 ms)
   on an M1 Air (40 radix-2 passes over the whole grid). Radix-4 or

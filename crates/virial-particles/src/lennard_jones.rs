@@ -1,4 +1,4 @@
-//! Lennard-Jones particles in a periodic box: the model fluid of molecular
+//! Lennard-Jones particles in a periodic rectangular box: the model fluid of molecular
 //! dynamics, and Virial's bridge from mechanics to thermodynamics.
 //!
 //! Reduced units: length sigma, energy epsilon, mass m and k_B are 1, so time
@@ -10,6 +10,11 @@
 //! continuous there; optionally the force is shifted too (see
 //! [`Settings::shifted_force`]). Temperature comes from kinetic energy; pressure from the
 //! virial theorem, P = (2 KE + W) / (3 V) with W the sum of r . F over pairs.
+//!
+//! For interfaces, [`LennardJones::sample_profile`] bins density,
+//! temperature, energy and the pressure tensor in slabs along z, and
+//! [`Profile::surface_tension`] gives the surface tension of a slab of
+//! liquid from the whole box's pressure tensor.
 
 use bytemuck::{Pod, Zeroable};
 use std::sync::Arc;
@@ -58,9 +63,9 @@ pub enum Thermostat {
 /// Box, cutoff, time step and thermostat.
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
-    /// Side of the periodic cube. Rounded to the nearest f32 (see
-    /// [`LennardJones::box_size`]).
-    pub box_size: f64,
+    /// Sides of the periodic box along x, y and z. Each is rounded to the
+    /// nearest f32 (see [`LennardJones::box_size`]).
+    pub box_size: [f64; 3],
     pub cutoff: f64,
     pub dt: f64,
     pub thermostat: Thermostat,
@@ -72,6 +77,8 @@ pub struct Settings {
     /// typical). Lists rebuild only when something has moved more than half
     /// of it.
     pub skin: f64,
+    /// Slabs along z for [`LennardJones::sample_profile`] (0: no profiles)
+    pub profile_bins: u32,
 }
 
 /// Totals at one step.
@@ -118,15 +125,91 @@ impl Measurement {
     }
 }
 
+/// Averages over one slab of the box (perpendicular to z), per sample.
+#[derive(Clone, Copy, Debug)]
+pub struct Slab {
+    /// Height of the slab's centre
+    pub z: f64,
+    /// Particles in the slab
+    pub particles: f64,
+    /// Sum of m v_a^2 over the slab's particles, for a = x, y, z
+    pub kinetic: [f64; 3],
+    /// Diagonal of the virial tensor, sum of r_a F_a over pairs, with each
+    /// pair spread along the line between its particles (Irving-Kirkwood)
+    pub virial: [f64; 3],
+    /// Potential energy, half of each pair's to each particle's slab
+    pub potential: f64,
+}
+
+/// Profiles along z, averaged over samples; from
+/// [`LennardJones::read_profile`].
+#[derive(Clone, Debug)]
+pub struct Profile {
+    pub samples: u64,
+    pub box_size: [f64; 3],
+    pub slabs: Vec<Slab>,
+    /// Whole-box diagonal of the virial tensor, summed pair by pair
+    pub virial: [f64; 3],
+}
+
+impl Profile {
+    pub fn slab_volume(&self) -> f64 {
+        let [lx, ly, lz] = self.box_size;
+        lx * ly * lz / self.slabs.len() as f64
+    }
+
+    /// Number density in each slab
+    pub fn density(&self) -> Vec<f64> {
+        let v = self.slab_volume();
+        self.slabs.iter().map(|s| s.particles / v).collect()
+    }
+
+    /// Kinetic temperature in each slab (k_B = 1, 3 degrees of freedom per
+    /// particle)
+    pub fn temperature(&self) -> Vec<f64> {
+        self.slabs
+            .iter()
+            .map(|s| s.kinetic.iter().sum::<f64>() / (3.0 * s.particles))
+            .collect()
+    }
+
+    /// Diagonal of the pressure tensor (P_xx, P_yy, P_zz) in each slab.
+    /// P_zz, normal to the slabs, is constant in mechanical equilibrium.
+    pub fn pressure_tensor(&self) -> Vec<[f64; 3]> {
+        let v = self.slab_volume();
+        self.slabs
+            .iter()
+            .map(|s| std::array::from_fn(|a| (s.kinetic[a] + s.virial[a]) / v))
+            .collect()
+    }
+
+    /// Diagonal of the whole box's pressure tensor
+    pub fn total_pressure_tensor(&self) -> [f64; 3] {
+        let volume: f64 = self.box_size.iter().product();
+        std::array::from_fn(|a| {
+            let kinetic: f64 = self.slabs.iter().map(|s| s.kinetic[a]).sum();
+            (kinetic + self.virial[a]) / volume
+        })
+    }
+
+    /// Surface tension of a liquid slab spanning x and y, from the pressure
+    /// anisotropy: gamma = L_z / 2 (P_zz - (P_xx + P_yy) / 2), the 2 for the
+    /// slab's two interfaces.
+    pub fn surface_tension(&self) -> f64 {
+        let [pxx, pyy, pzz] = self.total_pressure_tensor();
+        0.5 * self.box_size[2] * (pzz - 0.5 * (pxx + pyy))
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Params {
+    box_size: [f32; 4],
+    cell_size: [f32; 4],
+    cells: [u32; 4],
     count: u32,
-    cells: u32,
     total_cells: u32,
     thermostat: u32,
-    box_size: f32,
-    cell_size: f32,
     rc2: f32,
     shift: f32,
     dt: f32,
@@ -143,7 +226,9 @@ struct Params {
     capacity: u32,
     nh_gkt: f32,
     nh_q: f32,
-    _pad: u32,
+    profile_bins: u32,
+    bin_width: f32,
+    _pad: [u32; 3],
 }
 
 const WORKGROUP: u32 = 256;
@@ -151,6 +236,8 @@ const SLOTS: u64 = 8;
 /// Words in the accumulator buffer: 8 two-word slots, then list control words
 const CONTROL_WORDS: u64 = 28;
 const RING: usize = 3;
+/// Fixed-point slots per slab in the profile buffer (see lennard_jones.wgsl)
+const PROFILE_SLOTS: usize = 8;
 
 struct Readback {
     buffer: wgpu::Buffer,
@@ -166,7 +253,7 @@ pub struct LennardJones {
     device: wgpu::Device,
     queue: wgpu::Queue,
     count: u32,
-    box_size: f64,
+    box_size: [f64; 3],
     dt: f64,
     steps: u64,
     primed: bool,
@@ -183,6 +270,17 @@ pub struct LennardJones {
     nose_hoover: Option<(f64, f64)>,
     energy_scale: f64,
     momentum_scale: f64,
+    profile: Option<ProfileSums>,
+}
+
+/// Running sums for [`LennardJones::sample_profile`]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+struct ProfileSums {
+    bins: u32,
+    buffer: wgpu::Buffer,
+    group: wgpu::BindGroup,
+    pipeline: wgpu::ComputePipeline,
+    samples: u64,
 }
 
 struct Pipelines {
@@ -222,34 +320,40 @@ impl LennardJones {
         settings: Settings,
     ) -> Self {
         let count = particles.len() as u32;
-        let box_size = settings.box_size as f32 as f64;
+        let box_size = settings.box_size.map(|l| l as f32 as f64);
         let list_radius = settings.cutoff + settings.skin;
         // Cells at least the list radius wide, so the list search spans
         // 3 x 3 x 3. (Half-width cells with a 5 x 5 x 5 search measured slower:
-        // the loop over mostly empty cells costs more than it saves.) Capped
-        // at 101 per side: the prefix sum handles up to 1,048,576 cells.
-        let cells = ((box_size / list_radius).floor() as u32).min(101);
+        // the loop over mostly empty cells costs more than it saves.) The
+        // prefix sum handles up to 1,048,576 cells, so the longest axis gives
+        // up cells until they fit.
+        let mut cells = box_size.map(|l| (l / list_radius).floor() as u32);
         assert!(
-            cells >= 3,
-            "the box must be at least three (cutoff + skin) wide"
+            cells.iter().all(|&n| n >= 3),
+            "the box must be at least three (cutoff + skin) wide on every axis"
         );
-        let total_cells = cells.pow(3);
-        let cell_size = box_size / cells as f64;
+        while cells.iter().product::<u32>() > 1 << 20 {
+            let longest = (0..3).max_by_key(|&k| cells[k]).expect("three axes");
+            cells[longest] -= 1;
+        }
+        let total_cells = cells.iter().product::<u32>();
+        let cell_size: [f64; 3] = std::array::from_fn(|k| box_size[k] / cells[k] as f64);
+        let volume = box_size.iter().product::<f64>();
         // Sections start on 256-byte boundaries, so a renderer can bind one
         let segment = count.div_ceil(16) * 16;
         // Room for twice the average neighbour count plus a margin
-        let density = count as f64 / box_size.powi(3);
+        let density = count as f64 / volume;
         let expected = 4.0 / 3.0 * std::f64::consts::PI * list_radius.powi(3) * density;
         let capacity = (2.0 * expected + 32.0).ceil() as u32;
 
         let split = Df64::from_f64;
-        let wrap = |x: f64| x.rem_euclid(box_size);
+        let wrap = |x: f64, k: usize| x.rem_euclid(box_size[k]);
         let mut pos_hi = Vec::new();
         let mut pos_lo = Vec::new();
         let mut vel_hi = Vec::new();
         let mut vel_lo = Vec::new();
         for p in particles {
-            let x = p.pos.map(|v| split(wrap(v)));
+            let x: [Df64; 3] = std::array::from_fn(|k| split(wrap(p.pos[k], k)));
             let v = p.vel.map(split);
             pos_hi.push([x[0].hi, x[1].hi, x[2].hi, 0.0f32]);
             pos_lo.push([x[0].lo, x[1].lo, x[2].lo, 0.0]);
@@ -296,13 +400,14 @@ impl LennardJones {
                 (2, 1.0, 0.0, dof * t.temperature, q)
             }
         };
+        let profile_bins = settings.profile_bins;
         let params = Params {
+            box_size: [box_size[0], box_size[1], box_size[2], 0.0].map(|x| x as f32),
+            cell_size: [cell_size[0], cell_size[1], cell_size[2], 0.0].map(|x| x as f32),
+            cells: [cells[0], cells[1], cells[2], 0],
             count,
-            cells,
             total_cells,
             thermostat,
-            box_size: box_size as f32,
-            cell_size: cell_size as f32,
             rc2: rc2 as f32,
             shift: shift as f32,
             dt: settings.dt as f32,
@@ -319,7 +424,9 @@ impl LennardJones {
             capacity,
             nh_gkt: nh_gkt as f32,
             nh_q: nh_q as f32,
-            _pad: 0,
+            profile_bins,
+            bin_width: (box_size[2] / profile_bins.max(1) as f64) as f32,
+            _pad: [0; 3],
         };
 
         let usage = wgpu::BufferUsages::STORAGE
@@ -422,7 +529,7 @@ impl LennardJones {
             },
             count: None,
         };
-        let make_group = |label: &str, bindings: &[u32]| {
+        let make_group = |label: &str, bindings: &[u32], all: &[(u32, &wgpu::Buffer)]| {
             let chosen: Vec<_> = all.iter().filter(|(b, _)| bindings.contains(b)).collect();
             let entries: Vec<_> = chosen.iter().map(|(b, _)| layout_entry(*b)).collect();
             let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -449,8 +556,8 @@ impl LennardJones {
         };
         // Everything but the dispatch sizes (7 storage buffers, within
         // WebGPU's default of 8 per shader)
-        let (group, pipeline_layout) = make_group("lennard-jones", &[0, 1, 2, 3, 4, 5, 6, 8]);
-        let (decide_group, decide_layout) = make_group("lennard-jones decide", &[0, 2, 7]);
+        let (group, pipeline_layout) = make_group("lennard-jones", &[0, 1, 2, 3, 4, 5, 6, 8], &all);
+        let (decide_group, decide_layout) = make_group("lennard-jones decide", &[0, 2, 7], &all);
         let source = format!(
             "{}
 {}
@@ -501,6 +608,37 @@ impl LennardJones {
             force_kick: pipeline("force_kick"),
             measure: pipeline("measure"),
         };
+        // Profiles: the profile buffer takes the accumulators' binding, so the
+        // shader's fixed-point helpers add into it
+        let profile = (profile_bins > 0).then(|| {
+            let words = 2 * (profile_bins as u64 * PROFILE_SLOTS as u64 + 3);
+            let buffer = zeroed("lj profile sums", words * 4);
+            let (group, layout) = make_group(
+                "lennard-jones profile",
+                &[0, 1, 2, 6],
+                &[
+                    (0, &params_buffer),
+                    (1, &state),
+                    (2, &buffer),
+                    (6, &neighbors),
+                ],
+            );
+            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("profile"),
+                layout: Some(&layout),
+                module: &module,
+                entry_point: Some("profile"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+            ProfileSums {
+                bins: profile_bins,
+                buffer,
+                group,
+                pipeline,
+                samples: 0,
+            }
+        });
         let readback = (0..RING)
             .map(|_| Readback {
                 buffer: device.create_buffer(&wgpu::BufferDescriptor {
@@ -536,6 +674,7 @@ impl LennardJones {
             nose_hoover: (thermostat == 2).then_some((nh_gkt, nh_q)),
             energy_scale,
             momentum_scale,
+            profile,
         }
     }
 
@@ -543,14 +682,14 @@ impl LennardJones {
         self.count
     }
 
-    /// The box side actually used: the requested size rounded to f32, so the
-    /// GPU and any CPU check agree exactly.
-    pub fn box_size(&self) -> f64 {
+    /// The box sides actually used: the requested sizes rounded to f32, so
+    /// the GPU and any CPU check agree exactly.
+    pub fn box_size(&self) -> [f64; 3] {
         self.box_size
     }
 
     pub fn volume(&self) -> f64 {
-        self.box_size.powi(3)
+        self.box_size.iter().product()
     }
 
     pub fn steps(&self) -> u64 {
@@ -684,6 +823,34 @@ impl LennardJones {
         true
     }
 
+    /// Records one sample of the profiles along z, added to the running sums.
+    /// Needs [`Settings::profile_bins`] above zero.
+    pub fn sample_profile(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let count = self.count;
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("lennard-jones profile"),
+            timestamp_writes: None,
+        });
+        pass.set_bind_group(0, &self.group, &[]);
+        self.prime_if_needed(&mut pass);
+        let profile = self
+            .profile
+            .as_mut()
+            .expect("profiles need Settings::profile_bins above zero");
+        pass.set_bind_group(0, &profile.group, &[]);
+        pass.set_pipeline(&profile.pipeline);
+        pass.dispatch_workgroups(count.div_ceil(WORKGROUP), 1, 1);
+        profile.samples += 1;
+    }
+
+    /// Starts the profile sums afresh.
+    pub fn clear_profile(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        if let Some(profile) = &mut self.profile {
+            encoder.clear_buffer(&profile.buffer, 0, None);
+            profile.samples = 0;
+        }
+    }
+
     /// Call after submitting the commands that recorded [`LennardJones::measure`].
     pub fn after_submit(&mut self) {
         for slot in self.readback.iter_mut().filter(|s| s.pending_map) {
@@ -722,7 +889,7 @@ impl LennardJones {
                 virial: v[2] / self.energy_scale,
                 momentum: [v[3], v[4], v[5]].map(|p| p / self.momentum_scale),
                 count: self.count,
-                volume: self.box_size.powi(3),
+                volume: self.box_size.iter().product(),
                 list_rebuilds: words[17],
                 list_overflow: words[18],
                 thermostat_energy: self.nose_hoover.map_or(0.0, |(gkt, q)| {
@@ -776,32 +943,76 @@ impl LennardJones {
         self.wait();
     }
 
+    /// Samples the profiles now, waiting for the GPU. Native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn sample_profile_now(&mut self) {
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        self.sample_profile(&mut encoder);
+        self.queue.submit([encoder.finish()]);
+    }
+
+    /// The profiles averaged over every sample since the last clear. Native
+    /// only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn read_profile(&self) -> Profile {
+        let profile = self
+            .profile
+            .as_ref()
+            .expect("profiles need Settings::profile_bins above zero");
+        let words: Vec<u32> = bytemuck::cast_slice(&self.read_buffer(&profile.buffer)).to_vec();
+        let sums = fixed::decode(&words);
+        let bins = profile.bins as usize;
+        let samples = profile.samples as f64;
+        let width = self.box_size[2] / bins as f64;
+        let mut slabs = Vec::with_capacity(bins);
+        for b in 0..bins {
+            let q = |k: usize| sums[b * PROFILE_SLOTS + k] / samples;
+            slabs.push(Slab {
+                z: (b as f64 + 0.5) * width,
+                particles: q(0),
+                kinetic: [q(1), q(2), q(3)],
+                virial: [q(4), q(5), q(6)],
+                potential: q(7),
+            });
+        }
+        let total = |k: usize| sums[bins * PROFILE_SLOTS + k] / samples;
+        Profile {
+            samples: profile.samples,
+            box_size: self.box_size,
+            slabs,
+            virial: [total(0), total(1), total(2)],
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_buffer(&self, buffer: &wgpu::Buffer) -> Vec<u8> {
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("read back"),
+            size: buffer.size(),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, buffer.size());
+        self.queue.submit([encoder.finish()]);
+        staging
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.expect("read back"));
+        self.wait();
+        let out = staging
+            .slice(..)
+            .get_mapped_range()
+            .expect("mapped")
+            .to_vec();
+        staging.unmap();
+        out
+    }
+
     /// Reads every particle back at full precision, in the order they were
     /// given (the GPU keeps them in cell order). Native only.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn read_particles(&self) -> Vec<Particle> {
-        let read = |buffer: &wgpu::Buffer| -> Vec<u8> {
-            let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("read particles"),
-                size: buffer.size(),
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            let mut encoder = self.device.create_command_encoder(&Default::default());
-            encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, buffer.size());
-            self.queue.submit([encoder.finish()]);
-            staging
-                .slice(..)
-                .map_async(wgpu::MapMode::Read, |r| r.expect("read back"));
-            self.wait();
-            let out = staging
-                .slice(..)
-                .get_mapped_range()
-                .expect("mapped")
-                .to_vec();
-            staging.unmap();
-            out
-        };
+        let read = |buffer: &wgpu::Buffer| self.read_buffer(buffer);
         let state: Vec<[f32; 4]> = bytemuck::cast_slice(&read(&self.state)).to_vec();
         let ints: Vec<u32> = bytemuck::cast_slice(&read(&self.ints)).to_vec();
         let seg = self.segment as usize;
@@ -823,11 +1034,38 @@ impl LennardJones {
     }
 }
 
-/// `count` particles on a simple cubic lattice filling the box, with random
+/// `count` particles on a simple cubic lattice filling the cube, with random
 /// velocities at `temperature` and zero total momentum. Deterministic.
 pub fn lattice(count: usize, box_size: f64, temperature: f64, seed: u64) -> Vec<Particle> {
     let per_side = (count as f64).cbrt().ceil() as usize;
-    let spacing = box_size / per_side as f64;
+    lattice_sites(count, [box_size; 3], [per_side; 3], temperature, seed)
+}
+
+/// `count` particles on a lattice filling a box with sides `size` (the same
+/// number of sites per unit length on each axis, as near as whole numbers
+/// allow), with random velocities at `temperature` and zero total momentum.
+/// Deterministic.
+pub fn lattice_box(count: usize, size: [f64; 3], temperature: f64, seed: u64) -> Vec<Particle> {
+    let spacing = (size.iter().product::<f64>() / count as f64).cbrt();
+    let mut sites = size.map(|l| ((l / spacing).round() as usize).max(1));
+    // Grow the axis with the widest gaps until every particle has a site
+    while sites.iter().product::<usize>() < count {
+        let widest = (0..3)
+            .max_by(|&a, &b| (size[a] / sites[a] as f64).total_cmp(&(size[b] / sites[b] as f64)))
+            .expect("three axes");
+        sites[widest] += 1;
+    }
+    lattice_sites(count, size, sites, temperature, seed)
+}
+
+fn lattice_sites(
+    count: usize,
+    size: [f64; 3],
+    sites: [usize; 3],
+    temperature: f64,
+    seed: u64,
+) -> Vec<Particle> {
+    let gap: [f64; 3] = std::array::from_fn(|k| size[k] / sites[k] as f64);
     let mut s = seed | 1;
     let mut random = move || {
         s ^= s << 13;
@@ -841,13 +1079,13 @@ pub fn lattice(count: usize, box_size: f64, temperature: f64, seed: u64) -> Vec<
     };
     let mut particles: Vec<Particle> = (0..count)
         .map(|i| {
-            let (x, y, z) = (
-                i % per_side,
-                (i / per_side) % per_side,
-                i / (per_side * per_side),
-            );
+            let c = [
+                i % sites[0],
+                (i / sites[0]) % sites[1],
+                i / (sites[0] * sites[1]),
+            ];
             Particle {
-                pos: [x, y, z].map(|c| (c as f64 + 0.5) * spacing),
+                pos: std::array::from_fn(|k| (c[k] as f64 + 0.5) * gap[k]),
                 vel: [0; 3].map(|_| gaussian() * temperature.sqrt()),
             }
         })

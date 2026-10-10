@@ -68,23 +68,24 @@ fn cell_grid_finds_every_pair() {
         }
     }
     let settings = Settings {
-        box_size: 11.0,
+        box_size: [11.0; 3],
         cutoff: 2.5,
         dt: 0.002,
         thermostat: Thermostat::None,
         shifted_force: false,
         skin: 0.3,
+        profile_bins: 0,
     };
     let mut sim = LennardJones::new(&gpu.device, &gpu.queue, &particles, settings);
     let m = sim.measure_now();
     let wrapped: Vec<Particle> = particles
         .iter()
         .map(|p| Particle {
-            pos: p.pos.map(|x| x.rem_euclid(sim.box_size())),
+            pos: p.pos.map(|x| x.rem_euclid(sim.box_size()[0])),
             vel: p.vel,
         })
         .collect();
-    let (pe, w) = all_pairs(&wrapped, sim.box_size(), 2.5);
+    let (pe, w) = all_pairs(&wrapped, sim.box_size()[0], 2.5);
     println!(
         "1000 particles: potential GPU {:.10} CPU {pe:.10}; virial GPU {:.10} CPU {w:.10}",
         m.potential, m.virial
@@ -164,12 +165,13 @@ fn gas_relaxes_to_maxwell_boltzmann_at_constant_energy() {
         p.vel = p.vel.map(|v| v / norm * speed);
     }
     let settings = Settings {
-        box_size,
+        box_size: [box_size; 3],
         cutoff: 2.5,
         dt: 0.004,
         thermostat: Thermostat::None,
         shifted_force: false,
         skin: 0.3,
+        profile_bins: 0,
     };
     let mut sim = LennardJones::new(&gpu.device, &gpu.queue, &particles, settings);
     let start = sim.measure_now();
@@ -243,12 +245,13 @@ fn dilute_gas_obeys_the_ideal_gas_law_and_virial_expansion() {
         seed: 7,
     };
     let settings = Settings {
-        box_size,
+        box_size: [box_size; 3],
         cutoff: 2.5,
         dt: 0.005,
         thermostat: Thermostat::Langevin(thermostat),
         shifted_force: false,
         skin: 0.3,
+        profile_bins: 0,
     };
     let mut sim = LennardJones::new(&gpu.device, &gpu.queue, &particles, settings);
     sim.run(4_000);
@@ -294,7 +297,7 @@ fn thermostatted_reruns_are_bit_identical() {
     let Some(gpu) = gpu() else { return };
     let particles = lattice(2000, 16.0, 1.5, 11);
     let settings = Settings {
-        box_size: 16.0,
+        box_size: [16.0; 3],
         cutoff: 2.5,
         dt: 0.004,
         thermostat: Thermostat::Langevin(Langevin {
@@ -304,6 +307,7 @@ fn thermostatted_reruns_are_bit_identical() {
         }),
         shifted_force: false,
         skin: 0.3,
+        profile_bins: 0,
     };
     let run = || {
         let mut sim = LennardJones::new(&gpu.device, &gpu.queue, &particles, settings);
@@ -328,7 +332,7 @@ fn nose_hoover_samples_the_canonical_ensemble() {
     let temperature = 1.5;
     let box_size = (n as f64 / 0.3).cbrt();
     let settings = Settings {
-        box_size,
+        box_size: [box_size; 3],
         cutoff: 2.5,
         dt: 0.002,
         thermostat: Thermostat::NoseHoover(NoseHoover {
@@ -337,6 +341,7 @@ fn nose_hoover_samples_the_canonical_ensemble() {
         }),
         shifted_force: true,
         skin: 0.3,
+        profile_bins: 0,
     };
     // Start too cold: the thermostat has to bring it up
     let mut sim = LennardJones::new(

@@ -59,6 +59,14 @@ struct Params {
 @group(0) @binding(6) var<storage, read_write> springs: array<vec4f>;
 @group(0) @binding(7) var<storage, read_write> partners: array<u32>;
 
+fn grid_cells() -> vec3u {
+    return vec3u(params.cells);
+}
+
+fn grid_cell_size() -> vec3f {
+    return vec3f(params.cell_size);
+}
+
 const CONTACTS: u32 = 16u;
 const EMPTY: u32 = 0xffffffffu;
 const WALL: u32 = 0xfffffff0u;

@@ -48,6 +48,26 @@ above about 1000).
 | `nose_hoover_samples_the_canonical_ensemble` | 1000 molecules, Nosé–Hoover at T = 1.5, 2000 samples | Mean T within 1%; Var(T)/T² within 15% of 2/(3N−3); extended energy drift below 1e-4 | Mean T 1.5001; fluctuations −9.6% from canonical; extended energy drift 5.2e-5 over 40,000 steps |
 | `lj_timestep_study` (run by hand) | Drift over 40 time units vs step size | — | Shifted force: 5.0e-5 (dt 0.004), 1.0e-5 (0.002), 2.6e-6 (0.001) |
 
+## Liquid–vapour coexistence (`virial-particles`, `LennardJones` profiles)
+
+A slab of liquid, 24σ thick, in a 30 × 30 × 60 box (15,600 molecules) at
+T = 0.7 under a Nosé–Hoover thermostat, dt 0.005, cutoff 2.5σ. 20,000 steps to
+equilibrate, then 200,000 steps sampled every 20 in 240 slabs; errors are
+standard errors over 10 blocks of 20,000 steps. The liquid region is within
+6σ of the slab's centre, the vapour within 8σ of the far side of the box.
+References use the same potential and cutoff, so there are no tail
+corrections to add.
+
+| Test | Checks | Pass criterion | Measured |
+|---|---|---|---|
+| `rectangular_box_matches_all_pairs` | 1000 particles in a 9 × 10.5 × 14.25 box, both cutoff styles, against f64 all pairs | Potential, virial and each virial tensor component within 1e-5 | Within 2.2e-6 (potential), 1.6e-7 (virial), 3.4e-7 (tensor) |
+| `profiles_add_up_to_the_whole_box` | 2400 molecules, 120 slabs: slab sums against the whole-box measurement, and two runs | Count exact; kinetic within 1e-6; potential and virial within 1e-5; spread virial within 1e-6 of the pair-by-pair total; reruns bit-identical | Count exact; kinetic 4e-10; potential 9e-10; virial 2e-9; spread virial 2e-8; identical |
+| `force_shifted_slab_coexists_at_nist_densities` | Force-shifted potential against NIST SAT-TMMC (grand-canonical transition-matrix Monte Carlo) at T = 0.7 | Densities and vapour pressure within 3 combined standard errors; normal pressure in liquid, interfaces and vapour each within 3 combined standard errors of the whole box's | Liquid 0.72869 ± 0.00034 (NIST 0.72931, 95% limits ±0.00019; 1.8σ); vapour 0.01953 ± 0.00038 (NIST 0.019511, 0.04σ); normal pressure 0.011876 ± 0.000116 (NIST p_sat 0.011897, 0.2σ); by region 0.01146 ± 0.00029, 0.01192 ± 0.00010, 0.01208 ± 0.00013; temperature 0.69995 |
+| `truncated_shifted_slab_has_published_surface_tension` | Truncated and shifted potential against γ = 2.08 (1 − T/1.0779)^1.21 (Vrabec, Kedia, Fuchs and Hasse, Mol. Phys. 104, 1509, 2006) | Within 5% | 0.5887 ± 0.0064 against 0.5852 (+0.6%); liquid density 0.78675 ± 0.00008, vapour 0.00745 ± 0.00014 |
+
+The force-shifted surface tension at T = 0.7 is 0.3328 ± 0.0050 (no published
+value found to compare with). 220,000 steps take about 3.5 minutes on the M1.
+
 ## Granular materials (`virial-particles`, `Granular`, SI units)
 
 | Test | Checks | Pass criterion | Measured |
