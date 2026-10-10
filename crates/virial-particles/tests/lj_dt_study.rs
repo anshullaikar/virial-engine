@@ -35,3 +35,39 @@ fn lj_timestep_study() {
         }
     }
 }
+
+/// Steps per second of the Lennard-Jones solver as the count grows. Run with
+/// `cargo test --release -p virial-particles --test lj_dt_study speed -- --ignored --nocapture`.
+#[test]
+#[ignore = "benchmark: run explicitly"]
+fn lj_speed() {
+    let Ok(gpu) = pollster::block_on(Compute::new()) else {
+        eprintln!("skipped: no GPU");
+        return;
+    };
+    for n in [32_768usize, 131_072, 262_144, 1_048_576] {
+        // Density 0.4 keeps a million molecules within the cell grid's limit
+        let box_size = (n as f64 / 0.4).cbrt();
+        let settings = Settings {
+            box_size,
+            cutoff: 2.5,
+            dt: 0.002,
+            thermostat: None,
+            shifted_force: true,
+        };
+        let mut sim = LennardJones::new(
+            &gpu.device,
+            &gpu.queue,
+            &lattice(n, box_size, 1.5, 3),
+            settings,
+        );
+        sim.run(10);
+        let start = std::time::Instant::now();
+        sim.run(50);
+        let ms = start.elapsed().as_secs_f64() * 1e3 / 50.0;
+        println!(
+            "{n} molecules (density 0.4): {ms:.2} ms per step, {:.0} steps/s",
+            1e3 / ms
+        );
+    }
+}

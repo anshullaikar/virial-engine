@@ -75,6 +75,16 @@ fn git_commit() -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Whether the working tree has uncommitted changes, so the commit alone
+/// doesn't describe the code that ran
+fn git_dirty() -> Option<bool> {
+    let out = Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()?;
+    out.status.success().then_some(!out.stdout.is_empty())
+}
+
 fn start_ffmpeg(settings: &RecordSettings) -> Child {
     let size = format!("{}x{}", settings.width, settings.height);
     let fps = settings.fps.to_string();
@@ -114,6 +124,9 @@ pub fn record<S: Scene>(title: &str, settings: &RecordSettings) -> Recording {
     std::fs::create_dir_all(&settings.dir)
         .unwrap_or_else(|e| panic!("could not create {}: {e}", settings.dir.display()));
     let started = Instant::now();
+    // Read before rendering: a commit made during a long render must not be
+    // recorded as the code that ran
+    let (commit, dirty) = (git_commit(), git_dirty());
     let gpu = pollster::block_on(Gpu::headless(settings.width, settings.height))
         .unwrap_or_else(|e| panic!("{e}"));
     let info = gpu.adapter.get_info();
@@ -272,7 +285,11 @@ pub fn record<S: Scene>(title: &str, settings: &RecordSettings) -> Recording {
     field("virial_version", json_string(env!("CARGO_PKG_VERSION")));
     field(
         "git_commit",
-        git_commit().map_or("null".into(), |c| json_string(&c)),
+        commit.map_or("null".into(), |c| json_string(&c)),
+    );
+    field(
+        "git_uncommitted_changes",
+        dirty.map_or("null".into(), |d| d.to_string()),
     );
     field(
         "gpu",

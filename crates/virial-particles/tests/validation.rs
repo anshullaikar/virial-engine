@@ -202,3 +202,38 @@ fn cluster_matches_the_f64_reference() {
     assert!(((start.energy() - cpu_start.energy()) / cpu_start.energy()).abs() < 1e-9);
     assert!(((end.energy() - cpu_end.energy()) / cpu_end.energy()).abs() < 1e-6);
 }
+
+/// The 0.1.0 release target: energy drift below 1e-6 over a million steps
+/// (1000 orbits). Takes about a minute. Run with
+/// `cargo test --release -p virial-particles --test validation million -- --ignored --nocapture`.
+#[test]
+#[ignore = "long: run explicitly"]
+fn kepler_orbit_over_a_million_steps() {
+    let Some(gpu) = gpu() else { return };
+    let (bodies, period) = reference::kepler(1.0, 1e-3, 1.0, 0.5, 1.0);
+    let initial: Vec<Body> = bodies.iter().map(to_gpu).collect();
+    let mut sim = NBody::new(
+        &gpu.device,
+        &gpu.queue,
+        &initial,
+        Gravity {
+            g: 1.0,
+            softening: 0.0,
+        },
+        period / 1000.0,
+    );
+    let mut energies = vec![sim.measure_now().energy()];
+    for _ in 0..1000 {
+        sim.run(1000);
+        energies.push(sim.measure_now().energy());
+    }
+    let worst = energies
+        .iter()
+        .map(|e| ((e - energies[0]) / energies[0]).abs())
+        .fold(0.0, f64::max);
+    println!(
+        "Kepler, 10^6 steps (1000 orbits): drift {:.2e}, worst excursion {worst:.2e}",
+        drift(&energies)
+    );
+    assert!(drift(&energies) < 1e-6, "drift {:e}", drift(&energies));
+}
