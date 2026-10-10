@@ -8,7 +8,9 @@ use std::fmt;
 
 pub use wgpu;
 
+mod compute;
 mod timer;
+pub use compute::Compute;
 pub use timer::GpuTimer;
 
 /// Limits the engine's kernels are written against. These are WebGPU's
@@ -46,6 +48,50 @@ impl fmt::Display for GpuError {
 
 impl std::error::Error for GpuError {}
 
+pub(crate) fn instance() -> wgpu::Instance {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+    descriptor.backends = wgpu::Backends::PRIMARY | wgpu::Backends::BROWSER_WEBGPU;
+    wgpu::Instance::new(descriptor)
+}
+
+/// Opens the device after checking the adapter meets WebGPU's default limits.
+pub(crate) async fn request_device(
+    adapter: &wgpu::Adapter,
+) -> Result<(wgpu::Device, wgpu::Queue), GpuError> {
+    let available = adapter.limits();
+    let mut too_low = Vec::new();
+    required_limits().check_limits_with_fail_fn(&available, false, |name, want, have| {
+        too_low.push(format!("{name}: has {have}, needs {want}"));
+    });
+    if !too_low.is_empty() {
+        return Err(GpuError::LimitsTooLow(too_low.join(", ")));
+    }
+    // Kernels are written for the defaults, but scene size is memory, so take
+    // all the buffer memory the adapter offers
+    let required = wgpu::Limits {
+        max_buffer_size: available.max_buffer_size,
+        max_storage_buffer_binding_size: available.max_storage_buffer_binding_size,
+        ..required_limits()
+    };
+    let result = adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("virial"),
+            required_features: wgpu::Features::TIMESTAMP_QUERY & adapter.features(),
+            required_limits: required,
+            ..Default::default()
+        })
+        .await
+        .map_err(GpuError::Device)?;
+    let info = adapter.get_info();
+    log::info!(
+        "GPU: {} ({:?}, {:?})",
+        info.name,
+        info.backend,
+        info.device_type
+    );
+    Ok(result)
+}
+
 /// The device, queue and window surface.
 pub struct Gpu {
     pub adapter: wgpu::Adapter,
@@ -63,9 +109,7 @@ impl Gpu {
         width: u32,
         height: u32,
     ) -> Result<Self, GpuError> {
-        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
-        descriptor.backends = wgpu::Backends::PRIMARY | wgpu::Backends::BROWSER_WEBGPU;
-        let instance = wgpu::Instance::new(descriptor);
+        let instance = instance();
         let surface = instance.create_surface(target).map_err(GpuError::Surface)?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -77,39 +121,7 @@ impl Gpu {
             .await
             .map_err(GpuError::NoAdapter)?;
 
-        let available = adapter.limits();
-        let mut too_low = Vec::new();
-        required_limits().check_limits_with_fail_fn(&available, false, |name, want, have| {
-            too_low.push(format!("{name}: has {have}, needs {want}"));
-        });
-        if !too_low.is_empty() {
-            return Err(GpuError::LimitsTooLow(too_low.join(", ")));
-        }
-        // Kernels are written for the defaults, but scene size is memory, so
-        // take all the buffer memory the adapter offers
-        let required = wgpu::Limits {
-            max_buffer_size: available.max_buffer_size,
-            max_storage_buffer_binding_size: available.max_storage_buffer_binding_size,
-            ..required_limits()
-        };
-
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("virial"),
-                required_features: wgpu::Features::TIMESTAMP_QUERY & adapter.features(),
-                required_limits: required,
-                ..Default::default()
-            })
-            .await
-            .map_err(GpuError::Device)?;
-
-        let info = adapter.get_info();
-        log::info!(
-            "GPU: {} ({:?}, {:?})",
-            info.name,
-            info.backend,
-            info.device_type
-        );
+        let (device, queue) = request_device(&adapter).await?;
 
         let mut config = surface
             .get_default_config(&adapter, width.max(1), height.max(1))

@@ -9,7 +9,7 @@ Named after the virial theorem, which links a system's kinetic and potential
 energy. The same theorem describes galaxies settling into equilibrium and gives
 a gas its pressure.
 
-Status: step 2 of 8 towards 0.1.0. Virial runs scenes in a window or a browser
+Status: step 3 of 8 towards 0.1.0. Virial runs scenes in a window or a browser
 canvas through WebGPU (browser) or Metal / Vulkan / DX12 (native), with mouse
 and keyboard input, a stats panel and GPU pass timings.
 
@@ -53,12 +53,30 @@ overlapping points costs about 14 ms a frame, more than simulating 4M.
 WebGPU only: Chrome, Edge, or Safari 26+. Browsers without WebGPU get a
 message instead of a blank page.
 
+## Precision
+
+WGSL has no 64-bit floats and Apple GPUs have no 64-bit hardware, so Virial
+uses the techniques GPU molecular-dynamics codes rely on. Measured on an M1:
+
+| Technique | Result |
+|---|---|
+| Fixed-point accumulation (64-bit integers via atomics) | A sum of 2^20 values from 1e-6 to 1e3 is exact to the bit and identical across runs; error vs the true sum 6e-8, against 0.28 for a sequential f32 sum |
+| Double-float maths (two f32s per number) | Worst relative error vs f64: 8e-15 add, 1.3e-14 multiply, 8e-15 divide, 2.1e-14 square root |
+
+Metal compiles shaders in fast-math mode, which quietly reduces textbook
+double-float code to plain f32 accuracy (1e-7). `virial-precision` routes each
+step through an integer barrier the optimiser can't see through.
+
+Run the GPU tests with `cargo test -p virial-precision` (they skip on machines
+without a GPU).
+
 ## Layout
 
 | Path | What it is |
 |---|---|
 | `crates/virial` | Public API: `Scene` trait, `run`, input, stats panel, settings |
-| `crates/virial-gpu` | wgpu device, surface, limit checks, GPU pass timer |
+| `crates/virial-gpu` | wgpu device (windowed or headless), limit checks, GPU pass timer |
+| `crates/virial-precision` | Fixed-point accumulators and double-float maths for WGSL, tested on the GPU |
 | `examples/` | Example scenes, each with an `index.html` for the browser |
 | `npm/` | The `virial` npm package (name reserved; browser build to come) |
 | `scripts/build-web.sh` | Builds an example for the browser and reports its gzipped size |

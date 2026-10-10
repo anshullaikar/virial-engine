@@ -1985,6 +1985,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "virial-precision"
+version = "0.0.1"
+dependencies = [
+ "bytemuck",
+ "pollster",
+ "virial-gpu",
+ "wgpu",
+]
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,21 @@
+[package]
+name = "virial-precision"
+description = "Fixed-point accumulation and double-float maths for WGSL, with Rust mirrors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+
+[dev-dependencies]
+virial-gpu.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
+pollster.workspace = true
