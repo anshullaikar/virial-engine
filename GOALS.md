@@ -135,7 +135,7 @@ more steps per second; wasm at most 3 MB gzipped.
   over frames in chunks of 1024 bodies, with a result bit-identical to a
   complete measurement, so the preview no longer pauses.
 - **Safari** is untested.
-- **The quantum FFT is bandwidth-bound**: a 1024² step takes about 14 ms
+- **The quantum FFT is bandwidth-bound**: a 1024² step takes 15 ms (512²: 2.2 ms)
   on an M1 Air (40 radix-2 passes over the whole grid). Radix-4 or
   shared-memory passes would cut the passes 2–4x. The browser example
   defaults to 512².
