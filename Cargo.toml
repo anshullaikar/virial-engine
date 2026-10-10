@@ -18,6 +18,8 @@ categories = ["simulation", "science", "graphics", "wasm"]
 virial = { path = "crates/virial", version = "0.0.1" }
 virial-gpu = { path = "crates/virial-gpu", version = "0.0.1" }
 virial-precision = { path = "crates/virial-precision", version = "0.0.1" }
+virial-reference = { path = "crates/virial-reference", version = "0.0.1" }
+virial-particles = { path = "crates/virial-particles", version = "0.0.1" }
 
 # No GLES/WebGL backends: the physics needs compute shaders
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "metal", "vulkan", "dx12", "webgpu"] }

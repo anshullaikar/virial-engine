@@ -9,7 +9,7 @@ Named after the virial theorem, which links a system's kinetic and potential
 energy. The same theorem describes galaxies settling into equilibrium and gives
 a gas its pressure.
 
-Status: step 3 of 8 towards 0.1.0. Virial runs scenes in a window or a browser
+Status: step 4 of 8 towards 0.1.0. Virial runs scenes in a window or a browser
 canvas through WebGPU (browser) or Metal / Vulkan / DX12 (native), with mouse
 and keyboard input, a stats panel and GPU pass timings.
 
@@ -67,8 +67,24 @@ Metal compiles shaders in fast-math mode, which quietly reduces textbook
 double-float code to plain f32 accuracy (1e-7). `virial-precision` routes each
 step through an integer barrier the optimiser can't see through.
 
-Run the GPU tests with `cargo test -p virial-precision` (they skip on machines
-without a GPU).
+## Particle dynamics
+
+`virial-particles` integrates point masses under Newtonian gravity on the GPU:
+velocity Verlet, positions and velocities in double-float precision, exact
+all-pairs forces, and energy and momentum measured in double-float and summed
+in fixed point. Validation on an M1 against known physics and the f64 CPU
+reference in `virial-reference`:
+
+| Check | Result |
+|---|---|
+| Kepler orbit (e = 0.5), energy at start vs exact | −5.000000000000e-4, all 13 digits |
+| Energy drift over 100 orbits (10⁵ steps) | 3.4e-7 (plain f32: 2.9e-5; CPU f64: 3.2e-10) |
+| Orbit after 100 orbits vs CPU f64 | separation agrees to 7.5e-7 |
+| 512-body cluster energy vs CPU f64 | identical to 13 digits |
+| Rerun of a 4096-body simulation | bit-identical state and measurements |
+
+Run the GPU tests with `cargo test --release -p virial-precision -p virial-particles`
+(they skip on machines without a GPU).
 
 ## Layout
 
@@ -77,6 +93,8 @@ without a GPU).
 | `crates/virial` | Public API: `Scene` trait, `run`, input, stats panel, settings |
 | `crates/virial-gpu` | wgpu device (windowed or headless), limit checks, GPU pass timer |
 | `crates/virial-precision` | Fixed-point accumulators and double-float maths for WGSL, tested on the GPU |
+| `crates/virial-particles` | GPU particle dynamics: gravity, velocity Verlet, energy and momentum measurements |
+| `crates/virial-reference` | CPU reference solvers in f64 (and f32 for comparison), used by tests |
 | `examples/` | Example scenes, each with an `index.html` for the browser |
 | `npm/` | The `virial` npm package (name reserved; browser build to come) |
 | `scripts/build-web.sh` | Builds an example for the browser and reports its gzipped size |

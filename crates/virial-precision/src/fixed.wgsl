@@ -13,17 +13,41 @@
 //   @group(G) @binding(B) var<storage, read_write> virial_fixed: array<atomic<u32>>;
 // Slot k uses elements 2k (low word) and 2k + 1 (high word).
 
-// (low, high) words of x
+// (low, high) words of x, rounded to the nearest 2^-32 (ties to even).
+// Done entirely in integer arithmetic on the float's bits: a float version,
+// (x - floor(x)) * 2^32, gets rewritten under fast math (Metal's default) and
+// loses every fraction bit once |x| is more than about 1000.
 fn fixed_split(x: f32) -> vec2u {
-    // Split the magnitude: for m >= 0, m - floor(m) is exact. (Splitting a
-    // negative x directly would compute 1 - |fraction| and lose its low bits.)
-    let m = abs(x);
-    let whole = floor(m);
-    // Below 1 and exact, so this rounds to at most 2^32 - 256; round to nearest
-    // (ties to even) so many small terms don't bias the sum
-    let low = u32(round((m - whole) * 4294967296.0));
-    let high = u32(whole);
-    if x >= 0.0 {
+    let bits = bitcast<u32>(x);
+    let exponent = i32((bits >> 23u) & 0xffu) - 127;
+    // Below 2^-34 rounds to zero (this also covers zero and subnormals)
+    if exponent < -34 {
+        return vec2u(0u, 0u);
+    }
+    // |x| = mantissa * 2^(exponent - 23), so in units of 2^-32 it's
+    // mantissa * 2^shift
+    let mantissa = (bits & 0x7fffffu) | 0x800000u;
+    let shift = exponent + 9;
+    var low = 0u;
+    var high = 0u;
+    if shift >= 32 {
+        high = mantissa << u32(shift - 32);
+    } else if shift > 0 {
+        low = mantissa << u32(shift);
+        high = mantissa >> u32(32 - shift);
+    } else if shift == 0 {
+        low = mantissa;
+    } else {
+        // Right shift by 1..25 bits, rounding to nearest, ties to even
+        let r = u32(-shift);
+        low = mantissa >> r;
+        let rest = mantissa & ((1u << r) - 1u);
+        let half = 1u << (r - 1u);
+        if rest > half || (rest == half && (low & 1u) == 1u) {
+            low += 1u;
+        }
+    }
+    if (bits & 0x80000000u) == 0u {
         return vec2u(low, high);
     }
     // Two's complement negation of the 64-bit (high, low)

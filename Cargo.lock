@@ -1985,6 +1985,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "virial-particles"
+version = "0.0.1"
+dependencies = [
+ "bytemuck",
+ "pollster",
+ "virial-gpu",
+ "virial-precision",
+ "virial-reference",
+ "wgpu",
+]
+
+[[package]]
 name = "virial-precision"
 version = "0.0.1"
 dependencies = [
@@ -1993,6 +2005,10 @@ dependencies = [
  "virial-gpu",
  "wgpu",
 ]
+
+[[package]]
+name = "virial-reference"
+version = "0.0.1"
 
 [[package]]
 name = "walkdir"

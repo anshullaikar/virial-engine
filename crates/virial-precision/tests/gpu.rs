@@ -73,13 +73,14 @@ fn storage(gpu: &Compute, data: &[u8]) -> wgpu::Buffer {
         })
 }
 
-/// A million values from 1e-6 to 1e3, both signs: the kind of spread that
-/// loses small terms in a float sum.
+/// A million values from 1e-6 to 1e3, both signs, plus a few up to 1e6: the
+/// kind of spread that loses small terms in a float sum.
 fn spread_values(n: usize) -> Vec<f32> {
     let mut r = random(7);
     (0..n)
-        .map(|_| {
-            let magnitude = 10f64.powf(r() * 9.0 - 6.0);
+        .map(|i| {
+            let top = if i % 1024 == 0 { 6.0 } else { 3.0 };
+            let magnitude = 10f64.powf(r() * (top + 6.0) - 6.0);
             (if r() < 0.5 { -magnitude } else { magnitude }) as f32
         })
         .collect()
@@ -141,7 +142,7 @@ fn fixed_point_sums_are_exact_and_identical_every_run() {
     let naive = values.iter().fold(0.0f32, |s, &x| s + x) as f64;
     let ours = fixed::to_f64(expected);
     println!(
-        "sum of 2^20 values: exact {exact:.9}, fixed-point {ours:.9} (error {:.2e}), sequential f32 error {:.2e}",
+        "sum of 2^20 values from 1e-6 to 1e6: exact {exact:.9}, fixed-point {ours:.9} (error {:.2e}), sequential f32 error {:.2e}",
         (ours - exact).abs(),
         (naive - exact).abs()
     );
