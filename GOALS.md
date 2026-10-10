@@ -66,7 +66,7 @@ When two of these conflict, the higher one wins.
 | Topic | Decision |
 |---|---|
 | Name | **Virial**, after the virial theorem |
-| Rust crates | `virial` and `virial-*` on crates.io (versions 0.0.x until 0.1.0) |
+| Rust crates | `virial` and `virial-*` on crates.io (0.1.0 released 2026-10-10) |
 | npm | `@virial/engine` (the unscoped `virial` was refused as too similar to `vorpal`) |
 | Repository | github.com/virial-engine/virial-engine (public) |
 | Licence | MIT OR Apache-2.0 |
@@ -92,7 +92,7 @@ When two of these conflict, the higher one wins.
 | 5 | Renderer for science (sprites, colour maps, cameras, readouts) | Done: `virial-render` draws glowing sprites or depth-correct shaded spheres, viridis and inferno colour maps (CC0), floors and walls with grids, orbit cameras with keyframed paths, and text, panels and colour bars burned into frames (public-domain font8x8). Not yet measured: the 1M-particle preview target |
 | 6 | Video and data export on a simulation clock | Done natively: `record=<dir>` renders MP4 (ffmpeg) plus frames.csv, measurements.csv, .npy snapshots and run.json; reruns give identical frame hashes. 60 s 1080p60 galaxy collision rendered in 7.5 min. Browser offline export (WebCodecs) still to do |
 | 7 | Bridge to thermodynamics | Done. Lennard-Jones gas: ideal gas law within 0.76%, virial expansion within 1.3 standard errors, relaxes to Maxwell-Boltzmann (KS 0.003) at constant energy. Granular contact (SI units): Hertz contact time exact to 5 digits, a settled pile carries its weight to 0.009%. Nosé–Hoover thermostat added later: canonical fluctuations, extended energy conserved to 5e-5. Grain rotation added later: a bead rolls down an incline at 5/7 g sin(theta) within 0.11%. Friction memory (Cundall–Strack springs) added later: skidding at exactly mu g, piles held still |
-| 8 | Validation report and release | Report (docs/VALIDATION.md), changelog and the three showcase videos done. Release (crates 0.1.0, tag, GitHub release with videos) waits for approval |
+| 8 | Validation report and release | Done: 0.1.0 published to crates.io and tagged, with docs/VALIDATION.md and the showcase videos on the GitHub release |
 
 Release targets (estimates until measured): energy drift below 1e-6 over 10⁶
 Kepler steps; ideal gas law within 1%; identical reruns; 1M short-range

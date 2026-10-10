@@ -3,8 +3,7 @@ resolver = "3"
 members = ["crates/*", "examples/*"]
 
 [workspace.package]
-# 0.0.x until the 0.1.0 release
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Anshul Laikar"]
@@ -15,12 +14,12 @@ keywords = ["physics", "simulation", "webgpu", "gpu", "wgpu"]
 categories = ["simulation", "science", "graphics", "wasm"]
 
 [workspace.dependencies]
-virial = { path = "crates/virial", version = "0.0.1" }
-virial-gpu = { path = "crates/virial-gpu", version = "0.0.1" }
-virial-precision = { path = "crates/virial-precision", version = "0.0.1" }
-virial-reference = { path = "crates/virial-reference", version = "0.0.1" }
-virial-particles = { path = "crates/virial-particles", version = "0.0.1" }
-virial-render = { path = "crates/virial-render", version = "0.0.1" }
+virial = { path = "crates/virial", version = "0.1.0" }
+virial-gpu = { path = "crates/virial-gpu", version = "0.1.0" }
+virial-precision = { path = "crates/virial-precision", version = "0.1.0" }
+virial-reference = { path = "crates/virial-reference", version = "0.1.0" }
+virial-particles = { path = "crates/virial-particles", version = "0.1.0" }
+virial-render = { path = "crates/virial-render", version = "0.1.0" }
 
 # No GLES/WebGL backends: the physics needs compute shaders
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "metal", "vulkan", "dx12", "webgpu"] }

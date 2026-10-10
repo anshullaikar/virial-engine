@@ -9,7 +9,7 @@ Named after the virial theorem, which links a system's kinetic and potential
 energy. The same theorem describes galaxies settling into equilibrium and gives
 a gas its pressure.
 
-Status: steps 1–7 done, of 8 towards 0.1.0. Virial runs scenes in a window or a browser
+Status: 0.1.0, the first feature-complete release (see [CHANGELOG.md](CHANGELOG.md)). Virial runs scenes in a window or a browser
 canvas through WebGPU (browser) or Metal / Vulkan / DX12 (native), with mouse
 and keyboard input, a stats panel and GPU pass timings.
 

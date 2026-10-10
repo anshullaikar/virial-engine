@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (toward 0.1.0)
+## 0.1.0 (2026-10-10)
 
 First feature-complete version: GPU physics in Rust and WebGPU, validated
 against known physics, rendered to video with its data.
@@ -36,10 +36,24 @@ against known physics, rendered to video with its data.
 - `galaxies`, `gas`, `avalanche`: the three showcases.
 - `attractors`, `triangle`.
 
-### Known gaps
-See [GOALS.md](GOALS.md#known-gaps). Release targets not met yet: 65,536
-bodies of exact gravity at 10 steps/s (6.1 on an M1); the 10^6-step Kepler run
-and the 1M-particle preview haven't been measured.
+### Also in 0.1.0
+- Barnes–Hut gravity (GPU tree with quadrupoles) as an explicit choice for
+  large N; measurements stay exact.
+- Verlet neighbour lists for Lennard-Jones, rebuilt only when needed, decided
+  on the GPU; Nosé–Hoover thermostat with a conserved extended energy.
+- Granular grains spin, with Cundall–Strack friction springs and rolling
+  resistance.
+- Gravity measurements spread over frames, bit-identical to complete ones.
+
+### Release targets (M1 MacBook Air)
+- Met: energy drift below 1e-6 over 10^6 Kepler steps (2.8e-7); ideal gas law
+  within 1% (0.76%); identical reruns; wasm under 3 MB (under 200 KB).
+- Met with Barnes–Hut, not with exact gravity: 65,536 bodies at 10 steps/s
+  (10.4; exact all pairs reaches 6.1).
+- Not met: 1M short-range particles at 60 fps (one step takes about 19 ms).
+
+See [docs/VALIDATION.md](docs/VALIDATION.md) for every test and result, and
+[GOALS.md](GOALS.md#known-gaps) for known gaps.
 
 ## 0.0.1
 - Names reserved on crates.io (`virial`, `virial-gpu`) and npm (`@virial/engine`).
