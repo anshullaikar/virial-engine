@@ -17,7 +17,10 @@ use bytemuck::{Pod, Zeroable};
 use virial::{Config, Context, Frame, Gpu, KeyCode, Scene, arg, wgpu};
 use virial_particles::{Body, Gravity, Measurement, NBody};
 
-const GRAVITY: Gravity = Gravity { g: 1.0, softening: 0.05 };
+const GRAVITY: Gravity = Gravity {
+    g: 1.0,
+    softening: 0.05,
+};
 const DT: f64 = 0.005;
 const CORE_MASS: f64 = 1.0;
 /// Each disk's mass, shared by its stars
@@ -58,11 +61,22 @@ impl Random {
 
 /// A core and `stars` stars on near-circular orbits in the x-y plane, then
 /// tilted by `tilt` about the x axis and moved to `centre` at `velocity`.
-fn galaxy(stars: usize, centre: [f64; 3], velocity: [f64; 3], tilt: f64, spin: f64, random: &mut Random) -> Vec<Body> {
+fn galaxy(
+    stars: usize,
+    centre: [f64; 3],
+    velocity: [f64; 3],
+    tilt: f64,
+    spin: f64,
+    random: &mut Random,
+) -> Vec<Body> {
     let (r_min, r_max) = (0.25, 2.0);
     let star_mass = DISK_MASS / stars as f64;
     let mut bodies = Vec::with_capacity(stars + 1);
-    bodies.push(Body { pos: [0.0; 3], vel: [0.0; 3], mass: CORE_MASS });
+    bodies.push(Body {
+        pos: [0.0; 3],
+        vel: [0.0; 3],
+        mass: CORE_MASS,
+    });
     let eps2 = GRAVITY.softening * GRAVITY.softening;
     for _ in 0..stars {
         // Uniform density across the disk
@@ -98,8 +112,22 @@ fn encounter(n: usize) -> Vec<Body> {
     let total = 2.0 * (CORE_MASS + DISK_MASS);
     // Speed of a parabolic orbit at this separation, shared between the two
     let v = (2.0 * GRAVITY.g * total / separation).sqrt() * 0.5;
-    let mut bodies = galaxy(stars, [-4.0, -1.2, 0.0], [v, 0.0, 0.0], 0.0, 1.0, &mut random);
-    bodies.extend(galaxy(stars, [4.0, 1.2, 0.0], [-v, 0.0, 0.0], 1.05, 1.0, &mut random));
+    let mut bodies = galaxy(
+        stars,
+        [-4.0, -1.2, 0.0],
+        [v, 0.0, 0.0],
+        0.0,
+        1.0,
+        &mut random,
+    );
+    bodies.extend(galaxy(
+        stars,
+        [4.0, 1.2, 0.0],
+        [-v, 0.0, 0.0],
+        1.05,
+        1.0,
+        &mut random,
+    ));
     bodies
 }
 
@@ -116,7 +144,13 @@ fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> [[f32; 4]; 4] {
 fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [[f32; 4]; 4] {
     let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
     let norm = |a: [f32; 3]| {
         let l = dot(a, a).sqrt();
         [a[0] / l, a[1] / l, a[2] / l]
@@ -161,14 +195,28 @@ struct Galaxies {
 }
 
 impl Galaxies {
-    fn bind(gpu: &Gpu, layout: &wgpu::BindGroupLayout, view: &wgpu::Buffer, sim: &NBody) -> wgpu::BindGroup {
+    fn bind(
+        gpu: &Gpu,
+        layout: &wgpu::BindGroupLayout,
+        view: &wgpu::Buffer,
+        sim: &NBody,
+    ) -> wgpu::BindGroup {
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stars"),
             layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: view.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: sim.positions().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: sim.velocities().as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: view.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: sim.positions().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: sim.velocities().as_entire_binding(),
+                },
             ],
         })
     }
@@ -192,13 +240,21 @@ impl Scene for Galaxies {
         let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: None },
+            ty: wgpu::BindingType::Buffer {
+                ty,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
             count: None,
         };
         let storage = wgpu::BufferBindingType::Storage { read_only: true };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("stars"),
-            entries: &[entry(0, wgpu::BufferBindingType::Uniform), entry(1, storage), entry(2, storage)],
+            entries: &[
+                entry(0, wgpu::BufferBindingType::Uniform),
+                entry(1, storage),
+                entry(2, storage),
+            ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("stars"),
@@ -226,7 +282,10 @@ impl Scene for Galaxies {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: gpu.surface_format(),
-                    blend: Some(wgpu::BlendState { color: additive, alpha: additive }),
+                    blend: Some(wgpu::BlendState {
+                        color: additive,
+                        alpha: additive,
+                    }),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -292,8 +351,15 @@ impl Scene for Galaxies {
         let aspect = ctx.gpu.aspect();
         let (sp, cp) = self.pitch.sin_cos();
         let (sy, cy) = self.yaw.sin_cos();
-        let eye = [self.distance * sp * sy, -self.distance * sp * cy, self.distance * cp];
-        let view_proj = multiply(perspective(0.8, aspect, 0.05, 500.0), look_at(eye, [0.0; 3], [0.0, 0.0, 1.0]));
+        let eye = [
+            self.distance * sp * sy,
+            -self.distance * sp * cy,
+            self.distance * cp,
+        ];
+        let view_proj = multiply(
+            perspective(0.8, aspect, 0.05, 500.0),
+            look_at(eye, [0.0; 3], [0.0, 0.0, 1.0]),
+        );
         let config = &ctx.gpu.config;
         let view = View {
             view_proj,
@@ -304,7 +370,9 @@ impl Scene for Galaxies {
             heavy_mass: 0.5,
             _pad: [0.0; 2],
         };
-        ctx.gpu.queue.write_buffer(&self.view, 0, bytemuck::bytes_of(&view));
+        ctx.gpu
+            .queue
+            .write_buffer(&self.view, 0, bytemuck::bytes_of(&view));
 
         // Readouts
         let (elapsed, steps) = &mut self.steps_window;
@@ -316,11 +384,21 @@ impl Scene for Galaxies {
             *steps = self.sim.steps();
         }
         ctx.stats.set("Bodies", format!("{}", self.n));
-        ctx.stats.set("Simulation time", format!("{:.2} (dt {DT}, {} steps/frame)", self.sim.time(), self.steps_per_frame));
+        ctx.stats.set(
+            "Simulation time",
+            format!(
+                "{:.2} (dt {DT}, {} steps/frame)",
+                self.sim.time(),
+                self.steps_per_frame
+            ),
+        );
         if let (Some(first), Some(latest)) = (self.first, self.latest) {
             let drift = (latest.energy() - first.energy()) / first.energy().abs();
             ctx.stats.set("Energy", format!("{:.9}", latest.energy()));
-            ctx.stats.set("Energy drift", format!("{drift:+.2e}  (at t = {:.1})", latest.time));
+            ctx.stats.set(
+                "Energy drift",
+                format!("{drift:+.2e}  (at t = {:.1})", latest.time),
+            );
             let p = latest.momentum.iter().map(|x| x * x).sum::<f64>().sqrt();
             ctx.stats.set("Total momentum", format!("{p:.1e}"));
         }
@@ -334,27 +412,38 @@ impl Scene for Galaxies {
 
     fn render(&mut self, _ctx: &mut Context<'_>, frame: Frame<'_>) {
         if !self.paused {
-            self.sim.step(frame.encoder, self.steps_per_frame, frame.timer.and_then(|t| t.compute("gravity")));
+            self.sim.step(
+                frame.encoder,
+                self.steps_per_frame,
+                frame.timer.and_then(|t| t.compute("gravity")),
+            );
         }
-        if self.frames % MEASURE_EVERY == 0 {
+        if self.frames.is_multiple_of(MEASURE_EVERY) {
             self.sim.measure(frame.encoder);
         }
         self.frames += 1;
 
-        let mut pass = frame.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stars"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: frame.view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.004, g: 0.005, b: 0.012, a: 1.0 }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            timestamp_writes: frame.timer.and_then(|t| t.render("draw")),
-            ..Default::default()
-        });
+        let mut pass = frame
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stars"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: frame.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.004,
+                            g: 0.005,
+                            b: 0.012,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                timestamp_writes: frame.timer.and_then(|t| t.render("draw")),
+                ..Default::default()
+            });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.group, &[]);
         pass.draw(0..6, 0..self.n as u32);
@@ -362,5 +451,7 @@ impl Scene for Galaxies {
 }
 
 fn main() {
-    virial::run::<Galaxies>(Config { title: "Virial: galaxies" });
+    virial::run::<Galaxies>(Config {
+        title: "Virial: galaxies",
+    });
 }

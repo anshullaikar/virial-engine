@@ -97,4 +97,6 @@ more steps per second; wasm at most 3 MB gzipped.
 - **Precise measurements are expensive:** about ten force passes (213 ms at
   16k bodies). Plan: snapshot the state, then measure the snapshot spread over
   several frames.
-- **Safari** is untested. **CI** has no GPU, so GPU tests skip there.
+- **Safari** is untested.
+- **CI runs only on release tags** (and by hand). Day-to-day, `scripts/check.sh`
+  is the gate; it runs the GPU tests that CI can't, since CI has no GPU.

@@ -1,8 +1,11 @@
 name: CI
+# Runs on release tags (v0.1.0, ...) or when started by hand from the Actions
+# tab. Day-to-day checks run locally with scripts/check.sh, which also runs the
+# GPU tests this CI can't (its runners have no GPU).
 on:
   push:
-    branches: [main]
-  pull_request:
+    tags: ["v*"]
+  workflow_dispatch:
 
 jobs:
   build:

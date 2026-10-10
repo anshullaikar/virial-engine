@@ -10,9 +10,9 @@
 - Verify claims by running them: `cargo test --release` (GPU tests run on
   this machine's GPU), the examples natively, and the web build in a browser.
   Put measured numbers in docs, with the hardware.
-- Before committing: `cargo fmt --all`, then `cargo clippy --workspace
-  --all-targets -- -D warnings` for native and again with
-  `--target wasm32-unknown-unknown`.
+- Before committing: run `scripts/check.sh` (format, clippy for native and
+  wasm, all tests including GPU tests, web builds). GitHub CI only runs on
+  release tags, to save CI time, so this local check is the gate.
 - Browser speed only counts from a foreground tab in a front window: Chrome
   throttles anything else. Before measuring, check `document.visibilityState`
   is `visible` and `requestAnimationFrame` runs near the display rate (about
