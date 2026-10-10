@@ -86,7 +86,7 @@ When two of these conflict, the higher one wins.
 | 4 | Particle dynamics (gravity, Verlet, measurements) | Done: Kepler energy exact to 13 digits, drift 3.4e-7 over 100 orbits, reruns bit-identical |
 | 5 | Renderer for science (sprites, colour maps, cameras, readouts) | Done: `virial-render` draws glowing sprites or depth-correct shaded spheres, viridis and inferno colour maps (CC0), floors and walls with grids, orbit cameras with keyframed paths, and text, panels and colour bars burned into frames (public-domain font8x8). Not yet measured: the 1M-particle preview target |
 | 6 | Video and data export on a simulation clock | Done natively: `record=<dir>` renders MP4 (ffmpeg) plus frames.csv, measurements.csv, .npy snapshots and run.json; reruns give identical frame hashes. 60 s 1080p60 galaxy collision rendered in 7.5 min. Browser offline export (WebCodecs) still to do |
-| 7 | Bridge to thermodynamics | Done. Lennard-Jones gas: ideal gas law within 0.76%, virial expansion within 1.3 standard errors, relaxes to Maxwell-Boltzmann (KS 0.003) at constant energy. Granular contact (SI units): Hertz contact time exact to 5 digits, a settled pile carries its weight to 0.009%. Nosé–Hoover thermostat added later: canonical fluctuations, extended energy conserved to 5e-5. Not done: grain rotation and friction memory |
+| 7 | Bridge to thermodynamics | Done. Lennard-Jones gas: ideal gas law within 0.76%, virial expansion within 1.3 standard errors, relaxes to Maxwell-Boltzmann (KS 0.003) at constant energy. Granular contact (SI units): Hertz contact time exact to 5 digits, a settled pile carries its weight to 0.009%. Nosé–Hoover thermostat added later: canonical fluctuations, extended energy conserved to 5e-5. Grain rotation added later: a bead rolls down an incline at 5/7 g sin(theta) within 0.11%. Not done: friction memory |
 | 8 | Validation report and release | Report (docs/VALIDATION.md), changelog and the three showcase videos done. Release (crates 0.1.0, tag, GitHub release with videos) waits for approval |
 
 Release targets (estimates until measured): energy drift below 1e-6 over 10⁶
@@ -107,9 +107,9 @@ more steps per second; wasm at most 3 MB gzipped.
   after switching force sums to per-tile f32 plus double-float totals (before
   that, drift stalled at 1.7e-4 however small the step). The scene now
   defaults to dt 0.0025. Next lever: adaptive (block) time steps.
-- **Grains don't rotate and friction has no memory**, so friction resists
-  sliding but can't hold a steep slope still indefinitely. Needed for angle of
-  repose studies.
+- **Granular friction has no memory** (no tangential spring), so it resists
+  sliding but can't hold a steep slope still indefinitely. Grains do spin,
+  with rolling resistance. Needed for angle of repose studies.
 - **Lennard-Jones energy drift is set by the step size**, not the cutoff:
   over 40 time units (4096 molecules, T about 2) it falls from 5e-5 at dt
   0.004 to 1e-5 at 0.002 and 2.6e-6 at 0.001 (shifted force). The gas

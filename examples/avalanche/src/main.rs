@@ -3,8 +3,9 @@
 //! 40 cm box. They pour down, spread and pile up against the end wall, losing
 //! energy in collisions and friction.
 //!
-//! Contact physics: Hertz elasticity with viscoelastic damping and Coulomb
-//! friction, stiffness softened to E* = 2 MPa (see virial_particles::granular).
+//! Contact physics: Hertz elasticity with viscoelastic damping, Coulomb
+//! friction at the contact point (beads spin), rolling resistance 0.02,
+//! stiffness softened to E* = 2 MPa (see virial_particles::granular).
 //!
 //! Settings: `angle` (degrees, default 30), `steps` (steps of 20 us per
 //! frame, default 50, so 1 ms of real time per frame).
@@ -27,6 +28,8 @@ fn settings(angle: f64) -> Settings {
     let mut s = Settings::glass(BOX, DT);
     s.floor_angle = angle;
     s.floor_height = FLOOR_LOW;
+    // A little rolling resistance, as real beads have
+    s.rolling_friction = 0.02;
     s
 }
 

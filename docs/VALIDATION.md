@@ -47,6 +47,8 @@ above about 1000).
 | `elastic_collision_matches_hertz_contact_time` | Two 2.5 mm glass beads head-on at 0.5 m/s, no damping | Contact time within 0.5% of Hertz theory; restitution 1 within 1e-3; momentum conserved | 8.7732e-4 s vs 8.7732e-4 s; restitution 1.000000; momentum exactly 0 |
 | `damped_collision_loses_energy` | The same with damping | Restitution between 0 and 0.99 | 0.92 |
 | `settled_pile_rests_on_the_floor_with_its_weight` | 2304 beads settled for 2 s | Support within 1% of weight | 3.732933 N vs 3.732605 N (+0.009%) |
+| `bead_rolls_down_an_incline_at_five_sevenths_g_sin_theta` | One bead on a 20° slope for 0.3 s | Speed within 1% of (5/7) g sin θ t; spin × radius matching | 0.71816 m/s vs 0.71898 (−0.11%); frictionless sliding would give 1.007; spin × r 0.71945 |
+| `off_centre_collision_conserves_angular_momentum` | Glancing collision with spin and friction | Orbital plus spin angular momentum within 1e-5 | Changed by 6.8e-8, with spin transferred between the beads |
 | `reruns_are_bit_identical` | Beads falling, twice | Bit-identical | Identical |
 
 ## Recording (`virial`)

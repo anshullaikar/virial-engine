@@ -6,9 +6,10 @@
 //! `box_size` with a floor that can tilt about the y axis, so a pile can be
 //! released down a slope.
 //!
-//! Simplifications in this version: grains don't rotate, and friction has no
-//! memory (no tangential spring), so it resists sliding but can't hold a
-//! steep pile still forever.
+//! Grains spin: friction acts at the contact point (including the surfaces'
+//! spin) and turns them; optional rolling resistance opposes spin. Friction
+//! has no memory (no tangential spring), so it resists sliding but can't hold
+//! a steep pile still forever.
 //!
 //! Stiffness: real glass has E* around 4e10 Pa, which needs time steps near
 //! 1e-7 s. Granular simulations commonly soften E* (here by default to 2e6
@@ -27,6 +28,8 @@ use wgpu::util::DeviceExt;
 pub struct Grain {
     pub pos: [f64; 3],
     pub vel: [f64; 3],
+    /// Angular velocity, rad/s
+    pub spin: [f64; 3],
     pub radius: f64,
 }
 
@@ -45,6 +48,9 @@ pub struct Settings {
     pub friction: f64,
     /// Viscous regularisation of friction at low sliding speed, N s/m
     pub friction_gamma: f64,
+    /// Rolling resistance coefficient mu_r: torque up to mu_r r* F_n against
+    /// relative spin (0: none)
+    pub rolling_friction: f64,
     /// Floor tilt about the y axis, radians; it slopes down towards +x
     pub floor_angle: f64,
     /// Floor height at x = box_size
@@ -64,6 +70,7 @@ impl Settings {
             damping: 2e-5,
             friction: 0.5,
             friction_gamma: 0.05,
+            rolling_friction: 0.0,
             floor_angle: 0.0,
             floor_height: 0.0,
             dt,
@@ -76,7 +83,10 @@ impl Settings {
 pub struct Measurement {
     pub step: u64,
     pub time: f64,
+    /// Kinetic energy of translation
     pub kinetic: f64,
+    /// Kinetic energy of spin
+    pub rotational: f64,
     /// m g z summed over grains
     pub gravitational: f64,
     /// Energy stored in compressed contacts
@@ -89,7 +99,7 @@ pub struct Measurement {
 
 impl Measurement {
     pub fn energy(&self) -> f64 {
-        self.kinetic + self.gravitational + self.elastic
+        self.kinetic + self.rotational + self.gravitational + self.elastic
     }
 }
 
@@ -117,7 +127,8 @@ struct Params {
     floor_nx: f32,
     floor_nz: f32,
     floor_offset: f32,
-    _pad: [f32; 3],
+    rolling_friction: f32,
+    _pad: [f32; 2],
 }
 
 const WORKGROUP: u32 = 256;
@@ -175,7 +186,7 @@ impl Granular {
         let segment = count.div_ceil(16) * 16;
         let seg = segment as usize;
 
-        let mut state = vec![[0.0f32; 4]; 5 * seg];
+        let mut state = vec![[0.0f32; 4]; 7 * seg];
         for (i, g) in grains.iter().enumerate() {
             let x = g.pos.map(Df64::from_f64);
             let v = g.vel.map(Df64::from_f64);
@@ -183,6 +194,7 @@ impl Granular {
             state[seg + i] = [x[0].lo, x[1].lo, x[2].lo, 0.0];
             state[2 * seg + i] = [v[0].hi, v[1].hi, v[2].hi, 0.0];
             state[3 * seg + i] = [v[0].lo, v[1].lo, v[2].lo, 0.0];
+            state[5 * seg + i] = [g.spin[0] as f32, g.spin[1] as f32, g.spin[2] as f32, 0.0];
         }
 
         let mass = |r: f64| settings.density * 4.0 / 3.0 * std::f64::consts::PI * r.powi(3);
@@ -217,7 +229,8 @@ impl Granular {
             floor_nx: s as f32,
             floor_nz: c as f32,
             floor_offset: floor_offset as f32,
-            _pad: [0.0; 3],
+            rolling_friction: settings.rolling_friction as f32,
+            _pad: [0.0; 2],
         };
 
         let usage = wgpu::BufferUsages::STORAGE
@@ -513,9 +526,10 @@ impl Granular {
                 kinetic: v[0] / self.energy_scale,
                 gravitational: v[1] / self.energy_scale,
                 elastic: v[2] / self.energy_scale,
+                rotational: v[7] / self.energy_scale,
                 momentum: [v[3], v[4], v[5]].map(|p| p / self.momentum_scale),
                 support: v[6] / self.force_scale,
-                grains: v[7].round() as u32,
+                grains: self.count,
             });
         }
         done.sort_by_key(|m| m.step);
@@ -584,6 +598,7 @@ impl Granular {
             .map(|i| Grain {
                 pos: [0, 1, 2].map(|k| state[i][k] as f64 + state[seg + i][k] as f64),
                 vel: [0, 1, 2].map(|k| state[2 * seg + i][k] as f64 + state[3 * seg + i][k] as f64),
+                spin: [0, 1, 2].map(|k| state[5 * seg + i][k] as f64),
                 radius: state[i][3] as f64,
             })
             .collect()
@@ -616,6 +631,7 @@ pub fn block(min: [f64; 3], max: [f64; 3], radius: f64, spread: f64, seed: u64) 
                         min[2] + (z as f64 + 0.5) * spacing + jitter(random()),
                     ],
                     vel: [0.0; 3],
+                    spin: [0.0; 3],
                     radius: radius * (1.0 + spread * (2.0 * random() - 1.0)),
                 });
             }

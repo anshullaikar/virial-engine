@@ -23,11 +23,13 @@ fn pair(settings: &Settings, speed: f64) -> Vec<Grain> {
         Grain {
             pos: [mid - R * 1.2, mid, mid],
             vel: [speed / 2.0, 0.0, 0.0],
+            spin: [0.0; 3],
             radius: R,
         },
         Grain {
             pos: [mid + R * 1.2, mid, mid],
             vel: [-speed / 2.0, 0.0, 0.0],
+            spin: [0.0; 3],
             radius: R,
         },
     ]
@@ -173,4 +175,113 @@ fn reruns_are_bit_identical() {
     let b = run();
     assert!(a.0 == b.0, "states differ between runs");
     assert_eq!((a.1, a.2), (b.1, b.2), "measurements differ between runs");
+}
+
+#[test]
+fn bead_rolls_down_an_incline_at_five_sevenths_g_sin_theta() {
+    let Some(gpu) = gpu() else { return };
+    let angle = 20f64.to_radians();
+    let mut settings = Settings::glass(0.4, 2e-5);
+    settings.floor_angle = angle;
+    settings.floor_height = 0.02;
+    settings.damping = 0.0;
+    // Stiff regularisation, so rolling needs almost no slip
+    settings.friction_gamma = 1.0;
+    let m = settings.density * 4.0 / 3.0 * std::f64::consts::PI * R.powi(3);
+    let k = 4.0 / 3.0 * settings.modulus * R.sqrt();
+    // Resting overlap under the normal part of gravity
+    let overlap = (m * settings.gravity * angle.cos() / k).powf(2.0 / 3.0);
+    let (s, c) = angle.sin_cos();
+    let x = 0.1;
+    // Point on the floor below x, then out along the normal by r - overlap
+    let floor_z = settings.floor_height + (0.4 - x) * angle.tan();
+    let lift = R - overlap;
+    let grain = Grain {
+        pos: [x + s * lift, 0.2, floor_z + c * lift],
+        vel: [0.0; 3],
+        spin: [0.0; 3],
+        radius: R,
+    };
+    let mut sim = Granular::new(&gpu.device, &gpu.queue, &[grain], settings);
+    let t = 0.3;
+    sim.run((t / settings.dt) as u64);
+    let g = sim.read_grains()[0];
+    let along = [c, 0.0, -s];
+    let speed: f64 = (0..3).map(|i| g.vel[i] * along[i]).sum();
+    let spin = (g.spin.iter().map(|w| w * w).sum::<f64>()).sqrt();
+    let rolling = 5.0 / 7.0 * settings.gravity * s * t;
+    let sliding = settings.gravity * s * t;
+    println!(
+        "bead on a 20 degree slope after {t} s: speed {speed:.5} m/s; rolling theory {rolling:.5} ({:+.3}%), \
+         frictionless sliding would be {sliding:.5}; spin x radius {:.5} m/s",
+        (speed / rolling - 1.0) * 100.0,
+        spin * R
+    );
+    assert!(
+        (speed / rolling - 1.0).abs() < 0.01,
+        "not rolling at 5/7 g sin(theta)"
+    );
+    assert!(
+        (spin * R / speed - 1.0).abs() < 0.01,
+        "spin doesn't match rolling without slipping"
+    );
+}
+
+#[test]
+fn off_centre_collision_conserves_angular_momentum() {
+    let Some(gpu) = gpu() else { return };
+    let mut settings = Settings::glass(0.05, 2e-6);
+    settings.gravity = 0.0;
+    settings.floor_height = -1.0;
+    let mid = 0.025;
+    // Glancing collision with spin: friction transfers spin and momentum
+    let grains = [
+        Grain {
+            pos: [mid - 1.2 * R, mid - 0.6 * R, mid],
+            vel: [0.4, 0.0, 0.0],
+            spin: [0.0, 0.0, 30.0],
+            radius: R,
+        },
+        Grain {
+            pos: [mid + 1.2 * R, mid + 0.6 * R, mid],
+            vel: [-0.4, 0.0, 0.1],
+            spin: [10.0, -20.0, 0.0],
+            radius: R * 1.1,
+        },
+    ];
+    let mass = |g: &Grain| settings.density * 4.0 / 3.0 * std::f64::consts::PI * g.radius.powi(3);
+    let angular_momentum = |gs: &[Grain]| -> [f64; 3] {
+        let mut l = [0.0; 3];
+        for g in gs {
+            let (m, i) = (mass(g), 0.4 * mass(g) * g.radius * g.radius);
+            let p = g.pos;
+            let v = g.vel;
+            let orbital = [
+                p[1] * v[2] - p[2] * v[1],
+                p[2] * v[0] - p[0] * v[2],
+                p[0] * v[1] - p[1] * v[0],
+            ];
+            for k in 0..3 {
+                l[k] += m * orbital[k] + i * g.spin[k];
+            }
+        }
+        l
+    };
+    let mut sim = Granular::new(&gpu.device, &gpu.queue, &grains, settings);
+    let before = angular_momentum(&sim.read_grains());
+    sim.run(4000);
+    let after_grains = sim.read_grains();
+    let after = angular_momentum(&after_grains);
+    let size = before.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let change = (0..3)
+        .map(|k| (after[k] - before[k]).powi(2))
+        .sum::<f64>()
+        .sqrt()
+        / size;
+    let spin_changed = (after_grains[0].spin[2] - 30.0).abs() > 1.0;
+    println!(
+        "glancing collision with friction: relative change in angular momentum {change:.2e}; spin transferred: {spin_changed}"
+    );
+    assert!(spin_changed, "friction should have changed the spins");
+    assert!(change < 1e-5, "angular momentum not conserved");
 }
