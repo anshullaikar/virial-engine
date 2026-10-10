@@ -9,8 +9,28 @@
 //
 // To stay within WebGPU's default of 8 storage buffers per shader, related
 // arrays share a buffer in sections of `segment` elements:
-//   state: position hi, position lo, velocity hi, velocity lo, acceleration
-//   ints:  cell of each particle, particles in cell order, random state
+//   state: position hi, position lo, velocity hi, velocity lo, acceleration,
+//          position at the last neighbour-list build, packed position
+//
+// The packed position is what neighbours read: the hi part in xyz and the lo
+// part in w as three 9-bit fractions of the hi part's last-bit size, about 33
+// significant bits in 16 bytes instead of 32. Neighbour reads are most of the
+// memory traffic, so this nearly halves it.
+//
+// Forces use Verlet neighbour lists: everything within cutoff + skin, built
+// from the cell grid. Each step `decide` checks whether any particle has moved
+// more than skin / 2 since the last build and writes the dispatch sizes of the
+// rebuild kernels into `dispatch` (zero when no rebuild is needed), so the GPU
+// skips the rebuild without a round trip to the CPU. With that rule no pair
+// within the cutoff is ever missing from a list.
+//   ints:  cell of each particle, particles in cell order, random state,
+//          original index of the particle in each slot
+//   scratch: room to reorder the six state sections plus (random state,
+//          original index) when the lists rebuild
+//
+// When the lists rebuild, particles are also moved into cell order, so that
+// spatial neighbours sit next to each other in memory: neighbour reads then
+// mostly hit the cache. `ints` section 3 remembers each slot's original index.
 //   cells: cell starts (total_cells + 1), then the scan's block sums
 //
 // Prepended at build time: WGSL_FIXED and WGSL_DF64 come after this file.
@@ -39,9 +59,14 @@ struct Params {
     // Shifted-force cutoff: F(r_c), subtracted so the force also reaches
     // zero at the cutoff (0 for the plain shifted potential)
     force_shift: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    // (cutoff + skin)^2 and (skin / 2)^2
+    list_r2: f32,
+    half_skin2: f32,
+    // Neighbours stored per particle (the list holds a count, then these)
+    capacity: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -50,6 +75,58 @@ struct Params {
 @group(0) @binding(3) var<storage, read_write> cell_count: array<atomic<u32>>;
 @group(0) @binding(4) var<storage, read_write> cells: array<u32>;
 @group(0) @binding(5) var<storage, read_write> ints: array<u32>;
+@group(0) @binding(6) var<storage, read_write> neighbors: array<u32>;
+@group(0) @binding(8) var<storage, read_write> scratch: array<vec4f>;
+// Workgroup counts for the rebuild kernels: (cells, 1, 1), (particles, 1, 1),
+// (1, 1, 1), each zeroed when no rebuild is needed
+@group(0) @binding(7) var<storage, read_write> dispatch: array<u32>;
+
+// Slots in virial_fixed past the measurement accumulators
+const MAX_DISPLACEMENT: u32 = 16u;
+const REBUILDS: u32 = 17u;
+const OVERFLOW: u32 = 18u;
+const NEVER_BUILT: u32 = 19u;
+
+// ---- Packed positions ----
+
+// Size of the last bit of h, from its exponent (integer operations only)
+fn last_bit(h: f32) -> f32 {
+    let e = (bitcast<u32>(h) >> 23u) & 0xffu;
+    return bitcast<f32>((max(e, 24u) - 23u) << 23u);
+}
+
+// lo as three 9-bit fractions of each component's last bit. Bits 27-30 are
+// 0100, so the word is always a normal float: never NaN, never subnormal.
+fn pack_lo(hi: vec3f, lo: vec3f) -> f32 {
+    var bits = 0x20000000u;
+    for (var k = 0u; k < 3u; k++) {
+        let q = i32(round(clamp(lo[k] / last_bit(hi[k]), -0.5, 0.5) * 510.0));
+        bits |= u32(q + 256) << (9u * k);
+    }
+    return bitcast<f32>(bits);
+}
+
+fn unpack_lo(hi: vec3f, packed: f32) -> vec3f {
+    let bits = bitcast<u32>(packed);
+    var lo = vec3f(0.0);
+    for (var k = 0u; k < 3u; k++) {
+        let q = f32(i32((bits >> (9u * k)) & 511u) - 256);
+        lo[k] = q / 510.0 * last_bit(hi[k]);
+    }
+    return lo;
+}
+
+fn store_packed(i: u32, hi: vec3f, lo: vec3f) {
+    state[6u * params.segment + i] = vec4f(hi, pack_lo(hi, lo));
+}
+
+// Packs every position (before the first step)
+@compute @workgroup_size(256)
+fn pack(@builtin(global_invocation_id) id: vec3u) {
+    if id.x < params.count {
+        store_packed(id.x, state[id.x].xyz, state[params.segment + id.x].xyz);
+    }
+}
 
 // ---- Random numbers: per-particle PCG state, so runs are reproducible ----
 
@@ -84,12 +161,27 @@ fn wrap(x: vec2f) -> vec2f {
 }
 
 @compute @workgroup_size(256)
-fn begin(@builtin(global_invocation_id) id: vec3u) {
+fn begin(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_index) li: u32) {
     df_init(params.one);
-    let i = id.x;
-    if i >= params.count {
-        return;
+    if li == 0u {
+        atomicStore(&group_moved, 0u);
     }
+    workgroupBarrier();
+    let i = id.x;
+    if i < params.count {
+        step_particle(i);
+    }
+    workgroupBarrier();
+    // One global atomic per workgroup: a million threads hitting the same
+    // word every step would queue up one behind another
+    if li == 0u {
+        atomicMax(&virial_fixed[MAX_DISPLACEMENT], atomicLoad(&group_moved));
+    }
+}
+
+var<workgroup> group_moved: atomic<u32>;
+
+fn step_particle(i: u32) {
     let a = state[4u * params.segment + i];
     var vh = state[2u * params.segment + i];
     var vl = state[3u * params.segment + i];
@@ -125,6 +217,43 @@ fn begin(@builtin(global_invocation_id) id: vec3u) {
     state[3u * params.segment + i] = vl;
     state[i] = ph;
     state[params.segment + i] = pl;
+    store_packed(i, ph.xyz, pl.xyz);
+    // Squared displacement since the last list build (nearest image), as
+    // bits: for non-negative floats, integer order matches float order
+    var moved = ph.xyz - state[5u * params.segment + i].xyz;
+    moved -= params.box_size * round(moved / params.box_size);
+    atomicMax(&group_moved, bitcast<u32>(dot(moved, moved)));
+}
+
+// Sets the rebuild kernels' dispatch sizes: full when any particle has moved
+// more than skin / 2 since the last build (or there has been no build yet),
+// zero otherwise
+@compute @workgroup_size(1)
+fn decide() {
+    let moved = bitcast<f32>(atomicLoad(&virial_fixed[MAX_DISPLACEMENT]));
+    atomicStore(&virial_fixed[MAX_DISPLACEMENT], 0u);
+    let rebuild = moved > params.half_skin2 || atomicLoad(&virial_fixed[NEVER_BUILT]) == 0u;
+    let cells = select(0u, (params.total_cells + 255u) / 256u, rebuild);
+    let particles = select(0u, (params.count + 255u) / 256u, rebuild);
+    dispatch[0] = cells;
+    dispatch[1] = 1u;
+    dispatch[2] = 1u;
+    dispatch[3] = particles;
+    dispatch[4] = 1u;
+    dispatch[5] = 1u;
+    dispatch[6] = select(0u, 1u, rebuild);
+    dispatch[7] = 1u;
+    dispatch[8] = 1u;
+    // Reordering keeps neighbours close in memory; that decays slowly, so
+    // only every fourth rebuild pays for it
+    let count = atomicLoad(&virial_fixed[REBUILDS]);
+    dispatch[9] = select(0u, particles, rebuild && count % 4u == 0u);
+    dispatch[10] = 1u;
+    dispatch[11] = 1u;
+    if rebuild {
+        atomicAdd(&virial_fixed[REBUILDS], 1u);
+        atomicStore(&virial_fixed[NEVER_BUILT], 1u);
+    }
 }
 
 // ---- Cell grid: grid.wgsl, appended at build time ----
@@ -139,13 +268,58 @@ struct Pair {
     w: vec2f,
 }
 
-fn interactions(i: u32) -> Pair {
+// Copies every particle into its slot in cell order: slot s gets particle
+// ints[segment + s] (the sorted order)
+@compute @workgroup_size(256)
+fn reorder_gather(@builtin(global_invocation_id) id: vec3u) {
+    let s = id.x;
+    if s >= params.count {
+        return;
+    }
+    let seg = params.segment;
+    let i = ints[seg + s];
+    for (var k = 0u; k < 7u; k++) {
+        scratch[k * seg + s] = state[k * seg + i];
+    }
+    scratch[7u * seg + s] = vec4f(bitcast<f32>(ints[2u * seg + i]), bitcast<f32>(ints[3u * seg + i]), 0.0, 0.0);
+}
+
+// Writes the gathered copy back; slots now hold particles in cell order, so
+// the sorted order becomes the identity and each slot's cell is its cell
+@compute @workgroup_size(256)
+fn reorder_scatter(@builtin(global_invocation_id) id: vec3u) {
+    let s = id.x;
+    if s >= params.count {
+        return;
+    }
+    let seg = params.segment;
+    for (var k = 0u; k < 7u; k++) {
+        state[k * seg + s] = scratch[k * seg + s];
+    }
+    let extra = scratch[7u * seg + s];
+    ints[2u * seg + s] = bitcast<u32>(extra.x);
+    ints[3u * seg + s] = bitcast<u32>(extra.y);
+    ints[s] = cell_index(cell_coords(state[s].xyz));
+    ints[seg + s] = s;
+}
+
+// Lists everything within cutoff + skin, in sorted cell order, and records
+// the position the list was built at
+@compute @workgroup_size(256)
+fn build_list(@builtin(global_invocation_id) id: vec3u) {
+    let i = id.x;
+    if i >= params.count {
+        return;
+    }
     let xh = state[i].xyz;
     let xl = state[params.segment + i].xyz;
     let c = ints[i];
     let n = params.cells;
     let cc = vec3i(i32(c % n), i32((c / n) % n), i32(c / (n * n)));
-    var out = Pair(vec3f(0.0), vec2f(0.0), vec2f(0.0));
+    // Transposed layout: the count at [i], entry k at [segment * (k + 1) + i],
+    // so neighbouring threads read neighbouring words
+    let seg = params.segment;
+    var found = 0u;
     for (var dz = -1; dz <= 1; dz++) {
         for (var dy = -1; dy <= 1; dy++) {
             for (var dx = -1; dx <= 1; dx++) {
@@ -156,27 +330,57 @@ fn interactions(i: u32) -> Pair {
                     if j == i {
                         continue;
                     }
-                    var d = (state[j].xyz - xh) + (state[params.segment + j].xyz - xl);
-                    // Nearest periodic image
+                    let pj = state[6u * params.segment + j];
+                    var d = (pj.xyz - xh) + (unpack_lo(pj.xyz, pj.w) - xl);
                     d -= params.box_size * round(d / params.box_size);
-                    let r2 = dot(d, d);
-                    if r2 < params.rc2 {
-                        let inv2 = 1.0 / r2;
-                        let s6 = inv2 * inv2 * inv2;
-                        let s12 = s6 * s6;
-                        // r . F for this pair, and the force on i
-                        var rf = 24.0 * (2.0 * s12 - s6);
-                        var u = 4.0 * (s12 - s6) - params.shift;
-                        if params.force_shift != 0.0 {
-                            let r = sqrt(r2);
-                            rf -= r * params.force_shift;
-                            u += (r - sqrt(params.rc2)) * params.force_shift;
+                    if dot(d, d) < params.list_r2 {
+                        if found < params.capacity {
+                            neighbors[seg * (found + 1u) + i] = j;
                         }
-                        out.a -= d * (rf * inv2);
-                        out.pe = df_add_f(out.pe, 0.5 * u);
-                        out.w = df_add_f(out.w, 0.5 * rf);
+                        found += 1u;
                     }
                 }
+            }
+        }
+    }
+    neighbors[i] = min(found, params.capacity);
+    if found > params.capacity {
+        atomicMax(&virial_fixed[OVERFLOW], found);
+    }
+    state[5u * params.segment + i] = vec4f(xh, 0.0);
+}
+
+// Forces from the neighbour list. With `energies`, also the potential energy
+// and virial (only measurements need them).
+fn interactions(i: u32, energies: bool) -> Pair {
+    let xh = state[i].xyz;
+    let xl = state[params.segment + i].xyz;
+    let seg = params.segment;
+    let count = neighbors[i];
+    var out = Pair(vec3f(0.0), vec2f(0.0), vec2f(0.0));
+    for (var k = 0u; k < count; k++) {
+        let j = neighbors[seg * (k + 1u) + i];
+        let pj = state[6u * params.segment + j];
+        var d = (pj.xyz - xh) + (unpack_lo(pj.xyz, pj.w) - xl);
+        // Nearest periodic image
+        d -= params.box_size * round(d / params.box_size);
+        let r2 = dot(d, d);
+        if r2 < params.rc2 {
+            let inv2 = 1.0 / r2;
+            let s6 = inv2 * inv2 * inv2;
+            let s12 = s6 * s6;
+            // r . F for this pair, and the force on i
+            var rf = 24.0 * (2.0 * s12 - s6);
+            var u = 4.0 * (s12 - s6) - params.shift;
+            if params.force_shift != 0.0 {
+                let r = sqrt(r2);
+                rf -= r * params.force_shift;
+                u += (r - sqrt(params.rc2)) * params.force_shift;
+            }
+            out.a -= d * (rf * inv2);
+            if energies {
+                out.pe = df_add_f(out.pe, 0.5 * u);
+                out.w = df_add_f(out.w, 0.5 * rf);
             }
         }
     }
@@ -187,7 +391,7 @@ fn interactions(i: u32) -> Pair {
 fn prime(@builtin(global_invocation_id) id: vec3u) {
     df_init(params.one);
     if id.x < params.count {
-        state[4u * params.segment + id.x] = vec4f(interactions(id.x).a, 0.0);
+        state[4u * params.segment + id.x] = vec4f(interactions(id.x, false).a, 0.0);
     }
 }
 
@@ -199,7 +403,7 @@ fn force_kick(@builtin(global_invocation_id) id: vec3u) {
     if i >= params.count {
         return;
     }
-    let a = interactions(i).a;
+    let a = interactions(i, false).a;
     state[4u * params.segment + i] = vec4f(a, 0.0);
     var vh = state[2u * params.segment + i];
     var vl = state[3u * params.segment + i];
@@ -224,7 +428,7 @@ fn measure(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_i
     var w = vec2f(0.0);
     var momentum = vec3f(0.0);
     if i < params.count {
-        let p = interactions(i);
+        let p = interactions(i, true);
         pe = p.pe;
         w = p.w;
         let vh = state[2u * params.segment + i];

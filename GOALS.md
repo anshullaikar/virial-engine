@@ -92,8 +92,9 @@ more steps per second; wasm at most 3 MB gzipped.
 
 ## Known gaps
 
-- **1M-particle live preview at 60 fps isn't reachable on an M1 Air**:
-  Lennard-Jones costs about 34 ns per molecule per step (35 ms at 1M).
+- **1M-particle live preview at 60 fps isn't reached on an M1 Air**: with
+  Verlet neighbour lists, a 1M-molecule Lennard-Jones step takes about 19 ms
+  (53 steps/s, density 0.4), down from 35 ms with per-step cell search.
 - **All-pairs gravity speed:** 65,536 bodies run at 6.1 steps/s on an M1
   (2.6e10 interactions/s), against the 10 steps/s target. Next levers:
   Barnes–Hut or FMM for large N; making the low-part correction optional.

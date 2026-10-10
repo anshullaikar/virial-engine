@@ -62,7 +62,7 @@ above about 1000).
 | Energy drift below 1e-6 over 10^6 Kepler steps | **Met**: 2.8e-7 (worst excursion 7.3e-7) |
 | Ideal gas law within 1% | **Met**: 0.76% |
 | Identical reruns | **Met** for every solver and for recorded frames |
-| 1M short-range particles in live preview at 60 fps | **Not met** on an M1 Air: one step of 1M Lennard-Jones molecules takes 35 ms (28 steps/s). About 262k molecules fit 60 fps at one step per frame (8.6 ms) |
+| 1M short-range particles in live preview at 60 fps | **Not met** on an M1 Air: one step of 1M Lennard-Jones molecules takes about 19 ms with neighbour lists (53 steps/s; was 35 ms). 262k molecules take 4.7 ms |
 | 65,536 bodies of exact gravity at 10 or more steps per second | **Not met**: 6.1 steps/s on a cool M1 |
 | wasm at most 3 MB gzipped | **Met**: 139–191 KB per example |
 

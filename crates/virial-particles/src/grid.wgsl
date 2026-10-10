@@ -65,15 +65,15 @@ fn scan_blocks(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocati
     }
 }
 
-// Exclusive prefix sum of the block totals: one workgroup, four per thread
-// (up to 1024 blocks, so up to 262144 cells)
+// Exclusive prefix sum of the block totals: one workgroup, sixteen per thread
+// (up to 4096 blocks, so up to 1,048,576 cells)
 @compute @workgroup_size(256)
 fn scan_sums(@builtin(local_invocation_index) li: u32) {
     let blocks = (params.total_cells + 255u) / 256u;
-    var prefix: array<u32, 4>;
+    var prefix: array<u32, 16>;
     var total = 0u;
-    for (var k = 0u; k < 4u; k++) {
-        let b = li * 4u + k;
+    for (var k = 0u; k < 16u; k++) {
+        let b = li * 16u + k;
         var v = 0u;
         if b < blocks {
             v = cells[params.total_cells + 1u + b];
@@ -93,8 +93,8 @@ fn scan_sums(@builtin(local_invocation_index) li: u32) {
         workgroupBarrier();
     }
     let before = scan_tmp[li] - total;
-    for (var k = 0u; k < 4u; k++) {
-        let b = li * 4u + k;
+    for (var k = 0u; k < 16u; k++) {
+        let b = li * 16u + k;
         if b < blocks {
             cells[params.total_cells + 1u + b] = before + prefix[k];
         }

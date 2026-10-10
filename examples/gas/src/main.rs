@@ -88,6 +88,7 @@ impl Gas {
             dt: DT,
             thermostat: None,
             shifted_force: true,
+            skin: 0.3,
         };
         LennardJones::new(
             &gpu.device,

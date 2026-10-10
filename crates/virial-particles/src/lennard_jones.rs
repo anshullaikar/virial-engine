@@ -11,10 +11,9 @@
 //! [`Settings::shifted_force`]). Temperature comes from kinetic energy; pressure from the
 //! virial theorem, P = (2 KE + W) / (3 V) with W the sum of r . F over pairs.
 
+use bytemuck::{Pod, Zeroable};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-use bytemuck::{Pod, Zeroable};
 use virial_precision::{Df64, WGSL_DF64, WGSL_FIXED, fixed};
 use wgpu::util::DeviceExt;
 
@@ -49,6 +48,10 @@ pub struct Settings {
     /// the cutoff. Conserves energy much better; slightly changes the model,
     /// so compare thermodynamics against results for the same potential.
     pub shifted_force: bool,
+    /// Extra distance kept in each neighbour list beyond the cutoff (0.3 is
+    /// typical). Lists rebuild only when something has moved more than half
+    /// of it.
+    pub skin: f64,
 }
 
 /// Totals at one step.
@@ -63,6 +66,11 @@ pub struct Measurement {
     pub momentum: [f64; 3],
     pub count: u32,
     pub volume: f64,
+    /// Neighbour-list rebuilds so far
+    pub list_rebuilds: u32,
+    /// 0, or the largest neighbour count that didn't fit in a list (the
+    /// forces are then wrong; raise [`Settings::skin`]'s capacity margin)
+    pub list_overflow: u32,
 }
 
 impl Measurement {
@@ -102,11 +110,16 @@ struct Params {
     c2: f32,
     segment: u32,
     force_shift: f32,
-    _pad: [f32; 3],
+    list_r2: f32,
+    half_skin2: f32,
+    capacity: u32,
+    _pad: [u32; 3],
 }
 
 const WORKGROUP: u32 = 256;
 const SLOTS: u64 = 8;
+/// Words in the accumulator buffer: 8 two-word slots, then list control words
+const CONTROL_WORDS: u64 = 20;
 const RING: usize = 3;
 
 struct Readback {
@@ -123,16 +136,18 @@ pub struct LennardJones {
     device: wgpu::Device,
     queue: wgpu::Queue,
     count: u32,
-    total_cells: u32,
     box_size: f64,
     dt: f64,
     steps: u64,
     primed: bool,
     segment: u32,
     state: wgpu::Buffer,
+    ints: wgpu::Buffer,
     fixed: wgpu::Buffer,
     group: wgpu::BindGroup,
+    decide_group: wgpu::BindGroup,
     pipelines: Pipelines,
+    dispatch: wgpu::Buffer,
     readback: Vec<Readback>,
     energy_scale: f64,
     momentum_scale: f64,
@@ -140,6 +155,11 @@ pub struct LennardJones {
 
 struct Pipelines {
     begin: wgpu::ComputePipeline,
+    pack: wgpu::ComputePipeline,
+    decide: wgpu::ComputePipeline,
+    build_list: wgpu::ComputePipeline,
+    reorder_gather: wgpu::ComputePipeline,
+    reorder_scatter: wgpu::ComputePipeline,
     clear_cells: wgpu::ComputePipeline,
     bin: wgpu::ComputePipeline,
     scan_blocks: wgpu::ComputePipeline,
@@ -168,16 +188,24 @@ impl LennardJones {
     ) -> Self {
         let count = particles.len() as u32;
         let box_size = settings.box_size as f32 as f64;
-        let cells = (box_size / settings.cutoff).floor() as u32;
-        assert!(cells >= 3, "the box must be at least three cutoffs wide");
+        let list_radius = settings.cutoff + settings.skin;
+        // Cells at least the list radius wide, so the list search spans
+        // 3 x 3 x 3. (Half-width cells with a 5 x 5 x 5 search measured slower:
+        // the loop over mostly empty cells costs more than it saves.) Capped
+        // at 101 per side: the prefix sum handles up to 1,048,576 cells.
+        let cells = ((box_size / list_radius).floor() as u32).min(101);
         assert!(
-            cells.pow(3) <= 256 * 1024,
-            "too many cells; use a larger cutoff or smaller box"
+            cells >= 3,
+            "the box must be at least three (cutoff + skin) wide"
         );
         let total_cells = cells.pow(3);
         let cell_size = box_size / cells as f64;
         // Sections start on 256-byte boundaries, so a renderer can bind one
         let segment = count.div_ceil(16) * 16;
+        // Room for twice the average neighbour count plus a margin
+        let density = count as f64 / box_size.powi(3);
+        let expected = 4.0 / 3.0 * std::f64::consts::PI * list_radius.powi(3) * density;
+        let capacity = (2.0 * expected + 32.0).ceil() as u32;
 
         let split = Df64::from_f64;
         let wrap = |x: f64| x.rem_euclid(box_size);
@@ -242,7 +270,10 @@ impl LennardJones {
             c2: c2 as f32,
             segment,
             force_shift: force_shift as f32,
-            _pad: [0.0; 3],
+            list_r2: (list_radius * list_radius) as f32,
+            half_skin2: (0.25 * settings.skin * settings.skin) as f32,
+            capacity,
+            _pad: [0; 3],
         };
 
         let usage = wgpu::BufferUsages::STORAGE
@@ -274,21 +305,35 @@ impl LennardJones {
             })
             .collect();
         let seg = segment as usize;
-        let mut state = vec![[0.0f32; 4]; 5 * seg];
+        let mut state = vec![[0.0f32; 4]; 7 * seg];
         for i in 0..particles.len() {
             state[i] = pos_hi[i];
             state[seg + i] = pos_lo[i];
             state[2 * seg + i] = vel_hi[i];
             state[3 * seg + i] = vel_lo[i];
         }
-        let mut ints = vec![0u32; 3 * seg];
+        let mut ints = vec![0u32; 4 * seg];
         ints[2 * seg..2 * seg + rng.len()].copy_from_slice(&rng);
+        for i in 0..particles.len() {
+            ints[3 * seg + i] = i as u32;
+        }
         let state = init("lj state", bytemuck::cast_slice(&state));
-        let fixed = zeroed("lj accumulators", SLOTS * 8);
+        let fixed = zeroed("lj accumulators and list control", CONTROL_WORDS * 4);
+        let neighbors = zeroed(
+            "neighbour lists",
+            segment as u64 * (capacity as u64 + 1) * 4,
+        );
+        let scratch = zeroed("reorder scratch", 8 * segment as u64 * 16);
+        let dispatch = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("list rebuild dispatch sizes"),
+            size: 12 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
+            mapped_at_creation: false,
+        });
         let cell_count = zeroed("cell counts", total_cells as u64 * 4);
         let cells_buffer = zeroed(
             "cell starts and block sums",
-            (total_cells as u64 + 1 + 1024) * 4,
+            (total_cells as u64 + 1 + 4096) * 4,
         );
         let ints = init(
             "cells of particles, cell order, random state",
@@ -300,51 +345,63 @@ impl LennardJones {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-        let buffers = [
-            &params_buffer,
-            &state,
-            &fixed,
-            &cell_count,
-            &cells_buffer,
-            &ints,
+        let all: [(u32, &wgpu::Buffer); 9] = [
+            (0, &params_buffer),
+            (1, &state),
+            (2, &fixed),
+            (3, &cell_count),
+            (4, &cells_buffer),
+            (5, &ints),
+            (6, &neighbors),
+            (7, &dispatch),
+            (8, &scratch),
         ];
-        let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..buffers.len() as u32)
-            .map(|binding| wgpu::BindGroupLayoutEntry {
-                binding,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: if binding == 0 {
-                        wgpu::BufferBindingType::Uniform
-                    } else {
-                        wgpu::BufferBindingType::Storage { read_only: false }
-                    },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+        // `decide` writes the dispatch sizes, which the rebuild kernels then use
+        // as indirect arguments. A buffer can't be bound for writing while it
+        // supplies indirect arguments, so only `decide`'s group includes it.
+        let layout_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: if binding == 0 {
+                    wgpu::BufferBindingType::Uniform
+                } else {
+                    wgpu::BufferBindingType::Storage { read_only: false }
                 },
-                count: None,
-            })
-            .collect();
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("lennard-jones"),
-            entries: &entries,
-        });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("lennard-jones"),
-            layout: &layout,
-            entries: &buffers
-                .iter()
-                .enumerate()
-                .map(|(i, b)| wgpu::BindGroupEntry {
-                    binding: i as u32,
-                    resource: b.as_entire_binding(),
-                })
-                .collect::<Vec<_>>(),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("lennard-jones"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let make_group = |label: &str, bindings: &[u32]| {
+            let chosen: Vec<_> = all.iter().filter(|(b, _)| bindings.contains(b)).collect();
+            let entries: Vec<_> = chosen.iter().map(|(b, _)| layout_entry(*b)).collect();
+            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some(label),
+                entries: &entries,
+            });
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &layout,
+                entries: &chosen
+                    .iter()
+                    .map(|(b, buffer)| wgpu::BindGroupEntry {
+                        binding: *b,
+                        resource: buffer.as_entire_binding(),
+                    })
+                    .collect::<Vec<_>>(),
+            });
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+            (group, pipeline_layout)
+        };
+        // Everything but the dispatch sizes (7 storage buffers, within
+        // WebGPU's default of 8 per shader)
+        let (group, pipeline_layout) = make_group("lennard-jones", &[0, 1, 2, 3, 4, 5, 6, 8]);
+        let (decide_group, decide_layout) = make_group("lennard-jones decide", &[0, 2, 7]);
         let source = format!(
             "{}
 {}
@@ -369,6 +426,18 @@ impl LennardJones {
         };
         let pipelines = Pipelines {
             begin: pipeline("begin"),
+            pack: pipeline("pack"),
+            decide: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("decide"),
+                layout: Some(&decide_layout),
+                module: &module,
+                entry_point: Some("decide"),
+                compilation_options: Default::default(),
+                cache: None,
+            }),
+            build_list: pipeline("build_list"),
+            reorder_gather: pipeline("reorder_gather"),
+            reorder_scatter: pipeline("reorder_scatter"),
             clear_cells: pipeline("clear_cells"),
             bin: pipeline("bin"),
             scan_blocks: pipeline("scan_blocks"),
@@ -384,7 +453,7 @@ impl LennardJones {
             .map(|_| Readback {
                 buffer: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("lj readback"),
-                    size: SLOTS * 8,
+                    size: CONTROL_WORDS * 4,
                     usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 }),
@@ -399,16 +468,18 @@ impl LennardJones {
             device: device.clone(),
             queue: queue.clone(),
             count,
-            total_cells,
             box_size,
             dt: settings.dt,
             steps: 0,
             primed: false,
             segment,
             state,
+            ints,
             fixed,
             group,
+            decide_group,
             pipelines,
+            dispatch,
             readback,
             energy_scale,
             momentum_scale,
@@ -456,27 +527,38 @@ impl LennardJones {
         self.section(2)
     }
 
-    fn rebuild_cells(&self, pass: &mut wgpu::ComputePass<'_>) {
-        let particles = self.count.div_ceil(WORKGROUP);
-        let cells = self.total_cells.div_ceil(WORKGROUP);
+    /// Decides on the GPU whether the neighbour lists need rebuilding, then
+    /// runs the rebuild kernels with dispatch sizes that are zero when not.
+    fn update_lists(&self, pass: &mut wgpu::ComputePass<'_>) {
         let p = &self.pipelines;
-        for (pipeline, groups) in [
+        pass.set_bind_group(0, &self.decide_group, &[]);
+        pass.set_pipeline(&p.decide);
+        pass.dispatch_workgroups(1, 1, 1);
+        pass.set_bind_group(0, &self.group, &[]);
+        // Byte offsets of the (cells), (particles), (single) and (reorder) sizes
+        let (cells, particles, single, reorder) = (0, 12, 24, 36);
+        for (pipeline, offset) in [
             (&p.clear_cells, cells),
             (&p.bin, particles),
             (&p.scan_blocks, cells),
-            (&p.scan_sums, 1),
+            (&p.scan_sums, single),
             (&p.scan_add, cells),
             (&p.scatter, particles),
             (&p.sort_cells, cells),
+            (&p.reorder_gather, reorder),
+            (&p.reorder_scatter, reorder),
+            (&p.build_list, particles),
         ] {
             pass.set_pipeline(pipeline);
-            pass.dispatch_workgroups(groups, 1, 1);
+            pass.dispatch_workgroups_indirect(&self.dispatch, offset);
         }
     }
 
     fn prime_if_needed(&mut self, pass: &mut wgpu::ComputePass<'_>) {
         if !self.primed {
-            self.rebuild_cells(pass);
+            pass.set_pipeline(&self.pipelines.pack);
+            pass.dispatch_workgroups(self.count.div_ceil(WORKGROUP), 1, 1);
+            self.update_lists(pass);
             pass.set_pipeline(&self.pipelines.prime);
             pass.dispatch_workgroups(self.count.div_ceil(WORKGROUP), 1, 1);
             self.primed = true;
@@ -500,7 +582,7 @@ impl LennardJones {
         for _ in 0..steps {
             pass.set_pipeline(&self.pipelines.begin);
             pass.dispatch_workgroups(particles, 1, 1);
-            self.rebuild_cells(&mut pass);
+            self.update_lists(&mut pass);
             pass.set_pipeline(&self.pipelines.force_kick);
             pass.dispatch_workgroups(particles, 1, 1);
         }
@@ -512,7 +594,8 @@ impl LennardJones {
         let Some(index) = self.readback.iter().position(|r| !r.in_flight) else {
             return false;
         };
-        encoder.clear_buffer(&self.fixed, 0, None);
+        // Only the measurement slots: the words after them control the lists
+        encoder.clear_buffer(&self.fixed, 0, Some(SLOTS * 8));
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("lennard-jones measure"),
@@ -524,7 +607,7 @@ impl LennardJones {
             pass.dispatch_workgroups(self.count.div_ceil(WORKGROUP), 1, 1);
         }
         let slot = &mut self.readback[index];
-        encoder.copy_buffer_to_buffer(&self.fixed, 0, &slot.buffer, 0, SLOTS * 8);
+        encoder.copy_buffer_to_buffer(&self.fixed, 0, &slot.buffer, 0, CONTROL_WORDS * 4);
         slot.step = self.steps;
         slot.in_flight = true;
         slot.pending_map = true;
@@ -560,7 +643,7 @@ impl LennardJones {
             slot.buffer.unmap();
             slot.in_flight = false;
             slot.ready.store(false, Ordering::Release);
-            let v = fixed::decode(&words);
+            let v = fixed::decode(&words[..SLOTS as usize * 2]);
             done.push(Measurement {
                 step: slot.step,
                 time: slot.step as f64 * self.dt,
@@ -570,6 +653,8 @@ impl LennardJones {
                 momentum: [v[3], v[4], v[5]].map(|p| p / self.momentum_scale),
                 count: self.count,
                 volume: self.box_size.powi(3),
+                list_rebuilds: words[17],
+                list_overflow: words[18],
             });
         }
         done.sort_by_key(|m| m.step);
@@ -614,10 +699,11 @@ impl LennardJones {
         self.wait();
     }
 
-    /// Reads every particle back at full precision. Native only.
+    /// Reads every particle back at full precision, in the order they were
+    /// given (the GPU keeps them in cell order). Native only.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn read_particles(&self) -> Vec<Particle> {
-        let read = |buffer: &wgpu::Buffer| -> Vec<[f32; 4]> {
+        let read = |buffer: &wgpu::Buffer| -> Vec<u8> {
             let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("read particles"),
                 size: buffer.size(),
@@ -631,19 +717,32 @@ impl LennardJones {
                 .slice(..)
                 .map_async(wgpu::MapMode::Read, |r| r.expect("read back"));
             self.wait();
-            let out = bytemuck::cast_slice(&staging.slice(..).get_mapped_range().expect("mapped"))
+            let out = staging
+                .slice(..)
+                .get_mapped_range()
+                .expect("mapped")
                 .to_vec();
             staging.unmap();
             out
         };
-        let state = read(&self.state);
+        let state: Vec<[f32; 4]> = bytemuck::cast_slice(&read(&self.state)).to_vec();
+        let ints: Vec<u32> = bytemuck::cast_slice(&read(&self.ints)).to_vec();
         let seg = self.segment as usize;
-        (0..self.count as usize)
-            .map(|i| Particle {
-                pos: [0, 1, 2].map(|k| state[i][k] as f64 + state[seg + i][k] as f64),
-                vel: [0, 1, 2].map(|k| state[2 * seg + i][k] as f64 + state[3 * seg + i][k] as f64),
-            })
-            .collect()
+        let mut out = vec![
+            Particle {
+                pos: [0.0; 3],
+                vel: [0.0; 3]
+            };
+            self.count as usize
+        ];
+        for slot in 0..self.count as usize {
+            out[ints[3 * seg + slot] as usize] = Particle {
+                pos: [0, 1, 2].map(|k| state[slot][k] as f64 + state[seg + slot][k] as f64),
+                vel: [0, 1, 2]
+                    .map(|k| state[2 * seg + slot][k] as f64 + state[3 * seg + slot][k] as f64),
+            };
+        }
+        out
     }
 }
 

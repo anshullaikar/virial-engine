@@ -72,6 +72,7 @@ struct Params {
     _pad: [f32; 3],
 }
 
+/// Bodies per tile, which is also the workgroup size of every gravity kernel
 const WORKGROUP: u32 = 256;
 const FIXED_SLOTS: u64 = 8;
 const READBACK_RING: usize = 3;
@@ -290,8 +291,14 @@ impl NBody {
             immediate_size: 0,
         });
         let source = format!(
-            "{}\n{WGSL_FIXED}\n{WGSL_DF64}",
+            "{}
+{WGSL_FIXED}
+{WGSL_DF64}",
             include_str!("gravity.wgsl")
+        )
+        .replace(
+            "const TILE: u32 = 256u;",
+            &format!("const TILE: u32 = {WORKGROUP}u;"),
         );
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("n-body"),

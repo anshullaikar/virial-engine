@@ -24,6 +24,7 @@ fn lj_timestep_study() {
                 dt,
                 thermostat: None,
                 shifted_force,
+                skin: 0.3,
             };
             let mut sim = LennardJones::new(&gpu.device, &gpu.queue, &particles, settings);
             let start = sim.measure_now().energy();
@@ -54,6 +55,7 @@ fn lj_speed() {
             dt: 0.002,
             thermostat: None,
             shifted_force: true,
+            skin: 0.3,
         };
         let mut sim = LennardJones::new(
             &gpu.device,
@@ -65,9 +67,41 @@ fn lj_speed() {
         let start = std::time::Instant::now();
         sim.run(50);
         let ms = start.elapsed().as_secs_f64() * 1e3 / 50.0;
+        let m = sim.measure_now();
         println!(
-            "{n} molecules (density 0.4): {ms:.2} ms per step, {:.0} steps/s",
-            1e3 / ms
+            "{n} molecules (density 0.4): {ms:.2} ms per step, {:.0} steps/s; {} list rebuilds in 60 steps, overflow {}",
+            1e3 / ms,
+            m.list_rebuilds,
+            m.list_overflow
         );
+    }
+}
+
+#[test]
+#[ignore = "profiling: run explicitly"]
+fn lj_rebuild_cost() {
+    let Ok(gpu) = pollster::block_on(Compute::new()) else {
+        return;
+    };
+    let n = 1_048_576usize;
+    let box_size = (n as f64 / 0.4).cbrt();
+    let particles = lattice(n, box_size, 1.5, 3);
+    for skin in [0.001, 0.3, 1.0] {
+        let settings = Settings {
+            box_size,
+            cutoff: 2.5,
+            dt: 0.002,
+            thermostat: None,
+            shifted_force: true,
+            skin,
+        };
+        let mut sim = LennardJones::new(&gpu.device, &gpu.queue, &particles, settings);
+        sim.run(5);
+        let before = sim.measure_now().list_rebuilds;
+        let start = std::time::Instant::now();
+        sim.run(40);
+        let ms = start.elapsed().as_secs_f64() * 1e3 / 40.0;
+        let rebuilds = sim.measure_now().list_rebuilds - before;
+        println!("skin {skin}: {ms:.2} ms per step, {rebuilds} rebuilds in 40 steps");
     }
 }

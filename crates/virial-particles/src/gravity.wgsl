@@ -36,7 +36,7 @@ var<workgroup> tile_hi: array<vec4f, TILE>;
 var<workgroup> tile_lo: array<vec4f, TILE>;
 
 // First half kick, then drift: v += a dt/2, x += v dt
-@compute @workgroup_size(256)
+@compute @workgroup_size(TILE)
 fn drift(@builtin(global_invocation_id) id: vec3u) {
     df_init(params.one);
     let i = id.x;
@@ -162,7 +162,7 @@ fn kick(i: u32, a: vec3f) {
 }
 
 // Accelerations only: used once before the first step
-@compute @workgroup_size(256)
+@compute @workgroup_size(TILE)
 fn prime(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) li: u32) {
     df_init(params.one);
     let base = group.x * 2u * TILE;
@@ -176,7 +176,7 @@ fn prime(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) l
 }
 
 // New accelerations, then the second half kick: v += a dt/2
-@compute @workgroup_size(256)
+@compute @workgroup_size(TILE)
 fn force_kick(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) li: u32) {
     df_init(params.one);
     let base = group.x * 2u * TILE;
@@ -194,7 +194,7 @@ fn force_kick(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_ind
 // included, so a measurement is limited by fixed-point resolution (2^-52 of
 // the total), not by f32. About 10x the cost of a force pass: for checks, not
 // for every step.
-@compute @workgroup_size(256)
+@compute @workgroup_size(TILE)
 fn measure(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_index) li: u32) {
     df_init(params.one);
     fixed_wg_clear(li);

@@ -71,6 +71,7 @@ fn cell_grid_finds_every_pair() {
         dt: 0.002,
         thermostat: None,
         shifted_force: false,
+        skin: 0.3,
     };
     let mut sim = LennardJones::new(&gpu.device, &gpu.queue, &particles, settings);
     let m = sim.measure_now();
@@ -166,6 +167,7 @@ fn gas_relaxes_to_maxwell_boltzmann_at_constant_energy() {
         dt: 0.004,
         thermostat: None,
         shifted_force: false,
+        skin: 0.3,
     };
     let mut sim = LennardJones::new(&gpu.device, &gpu.queue, &particles, settings);
     let start = sim.measure_now();
@@ -244,6 +246,7 @@ fn dilute_gas_obeys_the_ideal_gas_law_and_virial_expansion() {
         dt: 0.005,
         thermostat: Some(thermostat),
         shifted_force: false,
+        skin: 0.3,
     };
     let mut sim = LennardJones::new(&gpu.device, &gpu.queue, &particles, settings);
     sim.run(4_000);
@@ -298,6 +301,7 @@ fn thermostatted_reruns_are_bit_identical() {
             seed: 3,
         }),
         shifted_force: false,
+        skin: 0.3,
     };
     let run = || {
         let mut sim = LennardJones::new(&gpu.device, &gpu.queue, &particles, settings);
