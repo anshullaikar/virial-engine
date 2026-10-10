@@ -8,7 +8,8 @@
 //!
 //! Units: G = 1, each core has mass 1, disks have radius about 2.
 //! Settings: `n` (bodies, default 8192), `dt` (step, default 0.0025), `steps`
-//! (steps per frame, default 8),
+//! (steps per frame, default 8), `solver` (`direct`, the default, or `tree`
+//! for Barnes-Hut with opening angle `theta`, default 0.5),
 //! camera `yaw`, `pitch`, `distance` and `spin` (radians per second).
 //! Controls: drag to orbit, scroll to zoom, Space to pause, R to restart,
 //! [ and ] to slow down or speed up.
@@ -19,7 +20,7 @@
 use std::f64::consts::TAU;
 
 use virial::{Config, Context, Frame, Gpu, KeyCode, Scene, arg, wgpu};
-use virial_particles::{Body, Gravity, Measurement, NBody};
+use virial_particles::{Body, Gravity, Measurement, NBody, Solver};
 use virial_render::{Camera, CameraPath, Coloring, Overlay, Particles, Style};
 
 const GRAVITY: Gravity = Gravity {
@@ -149,6 +150,17 @@ struct Galaxies {
     steps_window: (f64, u64),
 }
 
+/// Direct (exact) unless `solver=tree`
+fn solver() -> Solver {
+    if arg("solver", String::from("direct")) == "tree" {
+        Solver::BarnesHut {
+            theta: arg("theta", 0.5),
+        }
+    } else {
+        Solver::Direct
+    }
+}
+
 impl Galaxies {
     fn restart(&mut self, gpu: &Gpu) {
         self.sim = NBody::new(
@@ -158,6 +170,7 @@ impl Galaxies {
             GRAVITY,
             self.sim.dt(),
         );
+        self.sim.set_solver(solver());
         self.group = self.particles.bind(
             &gpu.device,
             self.sim.positions().as_entire_binding(),
@@ -204,7 +217,15 @@ impl Galaxies {
 
     fn readouts(&self) -> Vec<String> {
         let mut lines = vec![
-            format!("Galaxy collision: {} bodies, exact gravity", self.n),
+            match solver() {
+                Solver::Direct => format!("Galaxy collision: {} bodies, exact gravity", self.n),
+                Solver::BarnesHut { theta } => {
+                    format!(
+                        "Galaxy collision: {} bodies, Barnes-Hut theta {theta}",
+                        self.n
+                    )
+                }
+            },
             format!("t = {:.2}   dt = {}", self.sim.time(), self.sim.dt()),
         ];
         if let (Some(first), Some(latest)) = (self.first, self.latest) {
@@ -225,7 +246,8 @@ impl Scene for Galaxies {
         let n = arg("n", 8_192usize).clamp(256, 262_144);
         let steps_per_frame = arg("steps", 8u32).clamp(1, 64);
         let dt = arg("dt", DT);
-        let sim = NBody::new(&gpu.device, &gpu.queue, &encounter(n), GRAVITY, dt);
+        let mut sim = NBody::new(&gpu.device, &gpu.queue, &encounter(n), GRAVITY, dt);
+        sim.set_solver(solver());
         let particles = Particles::new(&gpu.device, gpu.surface_format());
         let overlay = Overlay::new(&gpu.device, gpu.surface_format());
         let group = particles.bind(
@@ -269,6 +291,7 @@ impl Scene for Galaxies {
             data.meta("dt", self.sim.dt());
             data.meta("G", GRAVITY.g);
             data.meta("softening", GRAVITY.softening);
+            data.meta("solver", format!("{:?}", solver()));
             data.meta("steps_per_frame", self.steps_per_frame);
             data.meta("core_mass", CORE_MASS);
             data.meta("disk_mass", DISK_MASS);

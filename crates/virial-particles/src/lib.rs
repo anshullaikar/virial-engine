@@ -16,6 +16,7 @@
 
 pub mod granular;
 pub mod lennard_jones;
+mod tree;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,6 +39,17 @@ pub struct Body {
 pub struct Gravity {
     pub g: f64,
     pub softening: f64,
+}
+
+/// How gravitational forces are computed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Solver {
+    /// Every pair, exactly: O(N²)
+    Direct,
+    /// Barnes-Hut tree: a group of bodies of size s at distance d counts as
+    /// one mass when s / d < theta. O(N log N); smaller theta is more
+    /// accurate and slower. Measurements stay exact (all pairs).
+    BarnesHut { theta: f64 },
 }
 
 /// Energy and momentum at one step.
@@ -104,6 +116,10 @@ pub struct NBody {
     vel_hi: wgpu::Buffer,
     vel_lo: wgpu::Buffer,
     fixed: wgpu::Buffer,
+    acc: wgpu::Buffer,
+    gravity: Gravity,
+    tree: Option<tree::Tree>,
+    kick_only: wgpu::ComputePipeline,
     group: wgpu::BindGroup,
     /// The same bindings with positions and velocities replaced by the
     /// snapshot being measured
@@ -361,12 +377,16 @@ impl NBody {
             force_kick: pipeline("force_kick"),
             measure: pipeline("measure"),
             advance: pipeline("advance"),
+            kick_only: pipeline("kick_only"),
             measuring: None,
             pos_hi,
             pos_lo,
             vel_hi,
             vel_lo,
             fixed,
+            acc,
+            gravity,
+            tree: None,
             group,
             snapshot_group,
             snapshot,
@@ -374,6 +394,24 @@ impl NBody {
             energy_scale,
             momentum_scale,
         }
+    }
+
+    /// Chooses how forces are computed (direct by default).
+    pub fn set_solver(&mut self, solver: Solver) {
+        self.tree = match solver {
+            Solver::Direct => None,
+            Solver::BarnesHut { theta } => Some(tree::Tree::new(
+                &self.device,
+                &self.pos_hi,
+                &self.acc,
+                self.count,
+                theta,
+                self.gravity.softening,
+                self.gravity.g,
+            )),
+        };
+        // Accelerations must come from the new solver before the next step
+        self.primed = false;
     }
 
     pub fn count(&self) -> u32 {
@@ -414,6 +452,21 @@ impl NBody {
         self.count.div_ceil(2 * WORKGROUP)
     }
 
+    /// Accelerations for the current positions, before the first step.
+    fn prime_forces(&mut self, pass: &mut wgpu::ComputePass<'_>, force_groups: u32) {
+        match &self.tree {
+            None => {
+                pass.set_pipeline(&self.prime);
+                pass.dispatch_workgroups(force_groups, 1, 1);
+            }
+            Some(tree) => {
+                tree.forces(pass);
+                pass.set_bind_group(0, &self.group, &[]);
+            }
+        }
+        self.primed = true;
+    }
+
     /// Records `steps` steps into one compute pass.
     pub fn step(
         &mut self,
@@ -428,15 +481,23 @@ impl NBody {
         });
         pass.set_bind_group(0, &self.group, &[]);
         if !self.primed {
-            pass.set_pipeline(&self.prime);
-            pass.dispatch_workgroups(force_groups, 1, 1);
-            self.primed = true;
+            self.prime_forces(&mut pass, force_groups);
         }
         for _ in 0..steps {
             pass.set_pipeline(&self.drift);
             pass.dispatch_workgroups(groups, 1, 1);
-            pass.set_pipeline(&self.force_kick);
-            pass.dispatch_workgroups(force_groups, 1, 1);
+            match &self.tree {
+                None => {
+                    pass.set_pipeline(&self.force_kick);
+                    pass.dispatch_workgroups(force_groups, 1, 1);
+                }
+                Some(tree) => {
+                    tree.forces(&mut pass);
+                    pass.set_bind_group(0, &self.group, &[]);
+                    pass.set_pipeline(&self.kick_only);
+                    pass.dispatch_workgroups(groups, 1, 1);
+                }
+            }
         }
         self.steps += steps as u64;
     }
@@ -452,11 +513,10 @@ impl NBody {
             return false;
         };
         if !self.primed {
+            let force_groups = self.force_groups();
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_bind_group(0, &self.group, &[]);
-            pass.set_pipeline(&self.prime);
-            pass.dispatch_workgroups(self.force_groups(), 1, 1);
-            self.primed = true;
+            self.prime_forces(&mut pass, force_groups);
         }
         let bytes = self.count as u64 * 16;
         for (live, copy) in [&self.pos_hi, &self.pos_lo, &self.vel_hi, &self.vel_lo]
@@ -621,6 +681,46 @@ impl NBody {
                 timeout: None,
             })
             .expect("the GPU did not finish");
+    }
+
+    /// The current accelerations, one per body. Native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn read_accelerations(&mut self) -> Vec<[f64; 3]> {
+        if !self.primed {
+            let force_groups = self.force_groups();
+            let mut encoder = self.device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_compute_pass(&Default::default());
+                pass.set_bind_group(0, &self.group, &[]);
+                self.prime_forces(&mut pass, force_groups);
+            }
+            self.queue.submit([encoder.finish()]);
+        }
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("read accelerations"),
+            size: self.acc.size(),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(&self.acc, 0, &staging, 0, self.acc.size());
+        self.queue.submit([encoder.finish()]);
+        staging
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.expect("read back"));
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("the GPU did not finish");
+        let a: Vec<[f32; 4]> =
+            bytemuck::cast_slice(&staging.slice(..).get_mapped_range().expect("mapped")).to_vec();
+        staging.unmap();
+        a.iter()
+            .take(self.count as usize)
+            .map(|v| [v[0] as f64, v[1] as f64, v[2] as f64])
+            .collect()
     }
 
     /// Reads every body back at full double-float precision. Native only.

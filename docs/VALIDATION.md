@@ -29,6 +29,14 @@ above about 1000).
 | `kepler_orbit_over_a_million_steps` (long, run by hand) | Same orbit, 10^6 steps (1000 orbits) | Drift below 1e-6 | Drift 2.8e-7; worst excursion 7.3e-7 |
 | `timestep_study` (galaxies example, run by hand) | Galaxy encounter, 4096 bodies, to t = 90 | — | Worst drift 1.0e-3 (dt 0.005), 1.5e-4 (0.0025), 4.3e-5 (0.00125) |
 
+### Barnes–Hut (`Solver::BarnesHut`)
+
+| Test | Checks | Pass criterion | Measured |
+|---|---|---|---|
+| `barnes_hut_forces_match_exact_gravity` | 8192 clustered bodies, tree forces (monopole + quadrupole) against exact | Median error below 5e-3, 99th percentile below 5e-2, smaller theta more accurate | θ 0.5: median 1.2e-3, 99th 9.5e-3; θ 0.3: median 2.0e-4, 99th 1.4e-3 |
+| `barnes_hut_reruns_are_bit_identical` | 5000 bodies, 50 steps, twice | Bit-identical | Identical |
+| `barnes_hut_speed` (benchmark) | θ 0.5 | — | 65,536 bodies: 10.4 steps/s (13.5 with monopoles only); 262,144: 1.9 steps/s |
+
 ## Thermodynamics (`virial-particles`, `LennardJones`)
 
 | Test | Checks | Pass criterion | Measured |
@@ -66,7 +74,7 @@ above about 1000).
 | Ideal gas law within 1% | **Met**: 0.76% |
 | Identical reruns | **Met** for every solver and for recorded frames |
 | 1M short-range particles in live preview at 60 fps | **Not met** on an M1 Air: one step of 1M Lennard-Jones molecules takes about 19 ms with neighbour lists (53 steps/s; was 35 ms). 262k molecules take 4.7 ms |
-| 65,536 bodies of exact gravity at 10 or more steps per second | **Not met**: 6.1 steps/s on a cool M1 |
+| 65,536 bodies of exact gravity at 10 or more steps per second | **Not met for exact gravity** (6.1 steps/s; the M1 Air's limit for all pairs, about 2.5e10 pairs/s). **Met with Barnes–Hut**: 10.4 steps/s at θ 0.5 with quadrupoles, median force error 1.2e-3 |
 | wasm at most 3 MB gzipped | **Met**: 139–191 KB per example |
 
 ## Showcase renders

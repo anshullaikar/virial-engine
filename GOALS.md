@@ -71,6 +71,7 @@ When two of these conflict, the higher one wins.
 | Units | SI by convention; any consistent units work |
 | Precision | f32 on the GPU (WGSL has no f64), made trustworthy with fixed-point accumulation, relative coordinates and double-float maths, all checked against a 64-bit CPU reference |
 | Integrators | Energy-conserving (symplectic) methods. Velocity Verlet for particles |
+| Gravity solvers | Exact all pairs by default; Barnes–Hut as an explicit choice for large N, never silently |
 | Physics scope, in order | Classical mechanics (particles: gravity, molecular dynamics, granular) → thermodynamics → quantum motion |
 | Games | Later, separate branch. AVBD rigid bodies live there because they trade energy for stability |
 | Showcase videos | Gas reaching equilibrium, galaxy collision, granular avalanche |
@@ -99,9 +100,12 @@ more steps per second; wasm at most 3 MB gzipped.
 - **1M-particle live preview at 60 fps isn't reached on an M1 Air**: with
   Verlet neighbour lists, a 1M-molecule Lennard-Jones step takes about 19 ms
   (53 steps/s, density 0.4), down from 35 ms with per-step cell search.
-- **All-pairs gravity speed:** 65,536 bodies run at 6.1 steps/s on an M1
-  (2.6e10 interactions/s), against the 10 steps/s target. Next levers:
-  Barnes–Hut or FMM for large N; making the low-part correction optional.
+- **Exact all-pairs gravity tops out around 2.5e10 pairs/s on an M1 Air**:
+  65,536 bodies at 6.1 steps/s. Tile size and bodies per thread were tuned;
+  it's hardware-bound. For large N, `Solver::BarnesHut` (GPU tree, monopole +
+  quadrupole) gives 10.4 steps/s at 65,536 with median force error 1.2e-3
+  (θ 0.5). Measurements stay exact either way, so energy readouts show the
+  approximation's cost.
 - **Galaxy energy drift depends on the step:** worst drift to t = 90 (4096
   bodies) is 1.0e-3 at dt 0.005, 1.5e-4 at 0.0025 and 4.3e-5 at 0.00125,
   after switching force sums to per-tile f32 plus double-float totals (before

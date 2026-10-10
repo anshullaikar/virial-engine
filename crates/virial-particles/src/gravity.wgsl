@@ -161,6 +161,27 @@ fn kick(i: u32, a: vec3f) {
     vel_lo[i] = vl;
 }
 
+// The second half kick from accelerations already in `acc` (computed by the
+// Barnes-Hut tree)
+@compute @workgroup_size(TILE)
+fn kick_only(@builtin(global_invocation_id) id: vec3u) {
+    df_init(params.one);
+    let i = id.x;
+    if i >= params.count {
+        return;
+    }
+    let a = acc[i];
+    var vh = vel_hi[i];
+    var vl = vel_lo[i];
+    for (var k = 0u; k < 3u; k++) {
+        let v = df_add_f(vec2f(vh[k], vl[k]), a[k] * params.half_dt);
+        vh[k] = v.x;
+        vl[k] = v.y;
+    }
+    vel_hi[i] = vh;
+    vel_lo[i] = vl;
+}
+
 // Accelerations only: used once before the first step
 @compute @workgroup_size(TILE)
 fn prime(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) li: u32) {
