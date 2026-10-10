@@ -285,3 +285,50 @@ fn off_centre_collision_conserves_angular_momentum() {
     assert!(spin_changed, "friction should have changed the spins");
     assert!(change < 1e-5, "angular momentum not conserved");
 }
+
+#[test]
+fn spinning_bead_skids_then_rolls_at_two_sevenths() {
+    let Some(gpu) = gpu() else { return };
+    // Set down spinning but not moving: kinetic friction mu m g speeds it up
+    // at exactly mu g while it skids, and angular momentum about the contact
+    // point gives the final rolling speed (2/7) r w0, reached after
+    // t = 2 r w0 / (7 mu g)
+    let mut settings = Settings::glass(0.4, 2e-5);
+    settings.damping = 0.0;
+    let m = settings.density * 4.0 / 3.0 * std::f64::consts::PI * R.powi(3);
+    let k = 4.0 / 3.0 * settings.modulus * R.sqrt();
+    let overlap = (m * settings.gravity / k).powf(2.0 / 3.0);
+    let spin = 200.0;
+    let grain = Grain {
+        pos: [0.1, 0.2, R - overlap],
+        vel: [0.0; 3],
+        spin: [0.0, spin, 0.0],
+        radius: R,
+    };
+    let mut sim = Granular::new(&gpu.device, &gpu.queue, &[grain], settings);
+    let final_speed = 2.0 / 7.0 * R * spin;
+    let skid_time = 2.0 * R * spin / (7.0 * settings.friction * settings.gravity);
+    let half = skid_time / 2.0;
+    sim.run((half / settings.dt).round() as u64);
+    let mid = sim.read_grains()[0];
+    let mid_expected = settings.friction * settings.gravity * half;
+    sim.run((2.0 * skid_time / settings.dt).round() as u64);
+    let end = sim.read_grains()[0];
+    println!(
+        "spinning bead: speed mid-skid {:.5} m/s (mu g t = {mid_expected:.5}, {:+.3}%); final {:.5} m/s \
+         ((2/7) r w0 = {final_speed:.5}, {:+.3}%); spin x radius at the end {:.5}",
+        mid.vel[0],
+        (mid.vel[0] / mid_expected - 1.0) * 100.0,
+        end.vel[0],
+        (end.vel[0] / final_speed - 1.0) * 100.0,
+        end.spin[1] * R
+    );
+    assert!(
+        (mid.vel[0] / mid_expected - 1.0).abs() < 0.01,
+        "skidding acceleration not mu g"
+    );
+    assert!(
+        (end.vel[0] / final_speed - 1.0).abs() < 0.01,
+        "final speed not (2/7) r w0"
+    );
+}

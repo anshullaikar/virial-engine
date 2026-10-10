@@ -8,8 +8,8 @@
 //!
 //! Grains spin: friction acts at the contact point (including the surfaces'
 //! spin) and turns them; optional rolling resistance opposes spin. Friction
-//! has no memory (no tangential spring), so it resists sliding but can't hold
-//! a steep pile still forever.
+//! follows Cundall and Strack: each contact keeps a tangential spring, so it
+//! holds still below the friction angle and slides at Coulomb's limit above.
 //!
 //! Stiffness: real glass has E* around 4e10 Pa, which needs time steps near
 //! 1e-7 s. Granular simulations commonly soften E* (here by default to 2e6
@@ -46,7 +46,7 @@ pub struct Settings {
     pub damping: f64,
     /// Coulomb friction coefficient
     pub friction: f64,
-    /// Viscous regularisation of friction at low sliding speed, N s/m
+    /// Tangential damping of contact springs, N s/m
     pub friction_gamma: f64,
     /// Rolling resistance coefficient mu_r: torque up to mu_r r* F_n against
     /// relative spin (0: none)
@@ -133,6 +133,8 @@ struct Params {
 
 const WORKGROUP: u32 = 256;
 const SLOTS: u64 = 8;
+/// Contact-table entries per grain (CONTACTS in granular.wgsl)
+const CONTACTS: u64 = 16;
 const RING: usize = 3;
 
 struct Readback {
@@ -249,7 +251,18 @@ impl Granular {
             contents: bytemuck::cast_slice(&state),
             usage,
         });
-        let fixed = zeroed("grain accumulators", SLOTS * 8);
+        // 8 two-word measurement slots, then the contact-table parity word
+        let fixed = zeroed("grain accumulators", SLOTS * 8 + 16);
+        // Contact tables (two, each CONTACTS entries per grain), all empty
+        let springs = zeroed("contact springs", 2 * CONTACTS * segment as u64 * 16);
+        let partners = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("contact partners"),
+            contents: bytemuck::cast_slice(&vec![
+                u32::MAX;
+                (2 * CONTACTS * segment as u64) as usize
+            ]),
+            usage,
+        });
         let cell_count = zeroed("cell counts", total_cells as u64 * 4);
         let cells_buffer = zeroed(
             "cell starts and block sums",
@@ -269,6 +282,8 @@ impl Granular {
             &cell_count,
             &cells_buffer,
             &ints,
+            &springs,
+            &partners,
         ];
         let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..buffers.len() as u32)
             .map(|binding| wgpu::BindGroupLayoutEntry {
@@ -326,8 +341,10 @@ impl Granular {
             "scatter",
             "sort_cells",
             "prime",
-            "force_kick",
+            "force",
+            "kick",
             "measure",
+            "flip",
         ]
         .map(|entry| {
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -438,6 +455,8 @@ impl Granular {
             self.rebuild_cells(pass);
             pass.set_pipeline(self.pipeline("prime"));
             pass.dispatch_workgroups(self.count.div_ceil(WORKGROUP), 1, 1);
+            pass.set_pipeline(self.pipeline("flip"));
+            pass.dispatch_workgroups(1, 1, 1);
             self.primed = true;
         }
     }
@@ -460,8 +479,12 @@ impl Granular {
             pass.set_pipeline(self.pipeline("begin"));
             pass.dispatch_workgroups(grains, 1, 1);
             self.rebuild_cells(&mut pass);
-            pass.set_pipeline(self.pipeline("force_kick"));
+            pass.set_pipeline(self.pipeline("force"));
             pass.dispatch_workgroups(grains, 1, 1);
+            pass.set_pipeline(self.pipeline("kick"));
+            pass.dispatch_workgroups(grains, 1, 1);
+            pass.set_pipeline(self.pipeline("flip"));
+            pass.dispatch_workgroups(1, 1, 1);
         }
         self.steps += steps as u64;
     }
@@ -471,7 +494,8 @@ impl Granular {
         let Some(index) = self.readback.iter().position(|r| !r.in_flight) else {
             return false;
         };
-        encoder.clear_buffer(&self.fixed, 0, None);
+        // Only the measurement slots: the parity word follows them
+        encoder.clear_buffer(&self.fixed, 0, Some(SLOTS * 8));
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("granular measure"),
