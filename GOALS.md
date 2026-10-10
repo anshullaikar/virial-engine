@@ -85,9 +85,12 @@ more steps per second; wasm at most 3 MB gzipped.
 - **All-pairs gravity speed:** 65,536 bodies run at 6.1 steps/s on an M1
   (2.6e10 interactions/s), against the 10 steps/s target. Next levers:
   Barnes–Hut or FMM for large N; making the low-part correction optional.
-- **Chrome preview is much slower than native:** the galaxies scene at 8,192
-  bodies runs about 6 fps in Chrome against 55 fps natively on the same M1.
-  Cause not yet found.
+- **Fixed time steps lose accuracy in close encounters:** the galaxies scene
+  holds energy to about 1e-6 before the galaxies meet, but drift grows to
+  about 5e-4 by t = 88 as stars swing close past the cores (dt 0.005,
+  softening 0.05). Next lever: smaller or adaptive (block) time steps.
+- Chrome matches native speed (galaxies at 8,192 bodies: 60 fps) only when
+  its window is in front; a background window is throttled to a few fps.
 - **Precise measurements are expensive:** about ten force passes (213 ms at
   16k bodies). Plan: snapshot the state, then measure the snapshot spread over
   several frames.
