@@ -12,7 +12,7 @@ npm install @virial/engine
 
 There is nothing to import yet. A browser build of the
 engine will be published here later. Follow progress in the
-[repository](https://github.com/anshullaikar/virial-engine); the Rust crate is
+[repository](https://github.com/virial-engine/virial-engine); the Rust crate is
 [`virial` on crates.io](https://crates.io/crates/virial).
 
 Licensed under MIT or Apache-2.0, at your option.

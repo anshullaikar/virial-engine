@@ -1,7 +1,7 @@
 # virial-precision
 
 Precision tools for 32-bit GPU maths, part of
-[Virial](https://github.com/anshullaikar/virial-engine).
+[Virial](https://github.com/virial-engine/virial-engine).
 
 - **Fixed-point accumulators** (WGSL + Rust): totals summed as 64-bit integers
   through 32-bit atomics. Exact, and identical on every run whatever order the

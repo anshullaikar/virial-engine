@@ -1,6 +1,6 @@
 # virial-particles
 
-GPU particle dynamics for [Virial](https://github.com/anshullaikar/virial-engine):
+GPU particle dynamics for [Virial](https://github.com/virial-engine/virial-engine):
 all-pairs Newtonian gravity with velocity Verlet, positions and velocities in
 double-float precision, and energy and momentum probes summed in fixed point.
 

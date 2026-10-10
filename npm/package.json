@@ -4,10 +4,10 @@
   "description": "GPU physics simulation in Rust and WebGPU, in the browser and natively. Early development.",
   "license": "(MIT OR Apache-2.0)",
   "author": "Anshul Laikar",
-  "homepage": "https://github.com/anshullaikar/virial-engine",
+  "homepage": "https://github.com/virial-engine/virial-engine",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anshullaikar/virial-engine.git",
+    "url": "git+https://github.com/virial-engine/virial-engine.git",
     "directory": "npm"
   },
   "keywords": [

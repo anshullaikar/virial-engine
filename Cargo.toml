@@ -9,8 +9,8 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Anshul Laikar"]
 rust-version = "1.88"
-repository = "https://github.com/anshullaikar/virial-engine"
-homepage = "https://github.com/anshullaikar/virial-engine"
+repository = "https://github.com/virial-engine/virial-engine"
+homepage = "https://github.com/virial-engine/virial-engine"
 keywords = ["physics", "simulation", "webgpu", "gpu", "wgpu"]
 categories = ["simulation", "science", "graphics", "wasm"]
 
