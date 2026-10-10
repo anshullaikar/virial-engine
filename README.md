@@ -56,6 +56,8 @@ overlapping points costs about 14 ms a frame, more than simulating 4M.
 WebGPU only: Chrome, Edge, or Safari 26+. Browsers without WebGPU get a
 message instead of a blank page.
 
+Every accuracy claim, its test and the measured result: [docs/VALIDATION.md](docs/VALIDATION.md).
+
 ## Precision
 
 WGSL has no 64-bit floats and Apple GPUs have no 64-bit hardware, so Virial
