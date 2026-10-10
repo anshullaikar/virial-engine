@@ -60,6 +60,18 @@ above about 1000).
 | `off_centre_collision_conserves_angular_momentum` | Glancing collision with spin and friction | Orbital plus spin angular momentum within 1e-5 | Changed by 6.8e-8, with spin transferred between the beads |
 | `reruns_are_bit_identical` | Beads falling, twice | Bit-identical | Identical |
 
+## Quantum motion (`virial-quantum`, `Wave`, ħ = m = 1)
+
+| Test | Checks | Pass criterion | Measured |
+|---|---|---|---|
+| `free_packet_moves_and_spreads_exactly` | Gaussian packet, 512² grid, t = 5 | Centre, spread and kinetic energy match the exact free solution | Spread 2.242244 vs 2.242271; kinetic 2.110980 vs 2.111111; probability 1 → 0.99994 |
+| `fft_round_trips_lose_less_than_1e_7_per_step` | Forward and inverse FFT with dt = 0, 128² and 512² | Probability change per round trip below 1e-7 | −4.65e-8 and −4.66e-8 (independent of grid size) |
+| `coherent_state_oscillates_without_spreading` | Displaced ground state in a harmonic well, one period | Returns to its start without spreading; energy conserved | x(T/2) = −3.000001 (exact −3), x(T) = 2.999998; spread 0.707107 (exact); energy 5.5 → 5.4999947 |
+| `imaginary_time_finds_the_ground_state` | Imaginary-time relaxation in a harmonic well | Energy and spread of the exact ground state | Energy 1.0000000 (exact 1); spread 0.707106 (exact 0.707107) |
+| `packet_tunnels_through_a_barrier_at_the_exact_rate` | Packet against V₀ sech²(x/a), absorbing edges | Transmitted probability within 0.5% of the exact (Landau–Lifshitz) rate, averaged over the packet's energies | 0.54915 vs 0.54950 (−0.065%) |
+| `detector_counts_the_probability_that_crosses_it` | Screen current integrated over time vs change in probability beyond it | Within 2e-4 | 0.982967 vs 0.982862 (1.0e-4) |
+| `double_slit_fringes_sit_where_the_path_difference_says` | Packet through two slits (1 wide, 4 apart, λ = 1.257), 1024² grid, screen at x = 20 | Dark fringes within 0.05 wavelengths of where the path difference from the slits is a half-integer number of wavelengths (solved exactly, no small-angle approximation) | Off by −0.019 and −0.014 wavelengths. Bright fringes are pulled toward the centre by the single-slit envelope, as expected (printed, not tested) |
+
 ## Recording (`virial`)
 
 | Test | Checks | Pass criterion | Measured |
@@ -89,3 +101,4 @@ above about 1000).
 | Galaxy collision, 16,384 bodies | 60 s (t = 0–72) | 16.1 min | Worst energy drift 8.1e-5, final 2.0e-6 |
 | Gas reaching equilibrium, 32,768 molecules | 40 s (t = 0–38) | 4.5 min | Temperature 2.000 → 2.278 as potential energy converts; worst drift 1.3e-5 |
 | Granular avalanche, 23,460 beads | 30 s (1.8 s real) | 3.3 min | 8.02 J dissipated; at rest, support 38.011 N vs weight 38.025 N (0.04% low, kinetic 6e-4 J) |
+| Double slit, 1024² grid | 19 s (t = 0–11.4) | 1.1 min | 13.2% of the probability reaches the screen; dark fringes where the path difference predicts. Also saves the screen curve and the final wavefunction as `.npy` |

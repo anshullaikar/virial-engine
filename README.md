@@ -34,6 +34,7 @@ python3 scripts/serve.py   # then open http://127.0.0.1:5173/examples/attractors
 | `galaxies` | Two disk galaxies colliding under exact gravity, with energy readouts |
 | `gas` | A gas reaching equilibrium: speeds relax onto the Maxwell–Boltzmann curve |
 | `avalanche` | 23,000 glass beads pouring down a slope, in SI units |
+| `double-slit` | A quantum wave packet through two slits, from the Schrödinger equation; a screen builds up the interference pattern |
 | `attractors` | Up to 16M particles pulled towards the mouse; a speed baseline |
 | `triangle` | One binary drawing in the browser and natively |
 
@@ -118,6 +119,22 @@ Validation on an M1:
 Run all GPU tests with `cargo test --release` (they skip on machines without
 a GPU), or everything with `scripts/check.sh`.
 
+## Quantum motion
+
+`virial_quantum::Wave` evolves a wavefunction on a 2D grid by the
+split-operator method: phase factors in position and momentum space, with GPU
+FFTs in between. Probability is conserved up to rounding (about 5e-8 lost per
+step). It can absorb waves at the edges, find ground states in imaginary time,
+and record the probability current through a screen. Validation on an M1:
+
+| Check | Result |
+|---|---|
+| Free Gaussian packet | Spread and kinetic energy match the exact solution to 1e-5 and 6e-5 |
+| Coherent state in a harmonic well, one period | Back to its start within 2e-6; spread unchanged; energy kept to 1e-6 |
+| Ground state by imaginary time | Energy 1.0000000 (exact 1) |
+| Tunnelling through a sech² barrier | Transmitted 0.54915, exact 0.54950 (−0.065%) |
+| Double slit | Dark fringes within 0.02 wavelengths of the path-difference rule |
+
 ## Videos and data
 
 Any example renders offline natively with `record=<dir>`:
@@ -141,6 +158,7 @@ the full state, and `run.json` (settings, GPU, version, git commit). Options:
 | `crates/virial-precision` | Fixed-point accumulators and double-float maths for WGSL, tested on the GPU |
 | `crates/virial-particles` | GPU particle dynamics: gravity, velocity Verlet, energy and momentum measurements |
 | `crates/virial-reference` | CPU reference solvers in f64 (and f32 for comparison), used by tests |
+| `crates/virial-quantum` | Schrödinger equation on a 2D grid: split-operator, GPU FFTs, absorbing edges, detector screen |
 | `crates/virial-render` | Particles (sprites or spheres), colour maps, floors and walls, cameras and paths, text readouts |
 | `examples/` | Example scenes, each with an `index.html` for the browser |
 | `npm/` | The `@virial/engine` npm package (name reserved; browser build to come) |

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Quantum motion (`virial-quantum`, new)
+- The 2D time-dependent Schrödinger equation (ħ = m = 1) by Strang
+  split-operator steps, with radix-2 Stockham FFTs on the GPU and phase
+  factors computed in f64 and rounded to unit magnitude.
+- Absorbing edges, imaginary-time ground states, a detector screen that
+  integrates the probability current through a line (6th-order derivative).
+- Measurements in fixed point: probability, position, spread, ⟨V⟩, ⟨T⟩.
+- Tested against exact solutions: free packet, coherent state, ground state,
+  tunnelling, double-slit fringes (see docs/VALIDATION.md).
+
+### Examples
+- `double-slit`: a wave packet through two slits, drawn as density or phase,
+  with the screen building up the interference pattern.
+
 ## 0.1.0 (2026-10-10)
 
 First feature-complete version: GPU physics in Rust and WebGPU, validated

@@ -493,6 +493,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "double-slit"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "virial",
+ "virial-quantum",
+ "virial-render",
+]
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2033,6 +2043,17 @@ dependencies = [
  "bytemuck",
  "pollster",
  "virial-gpu",
+ "wgpu",
+]
+
+[[package]]
+name = "virial-quantum"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "pollster",
+ "virial-gpu",
+ "virial-precision",
  "wgpu",
 ]
 

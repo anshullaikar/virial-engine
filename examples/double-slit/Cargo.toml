@@ -1,0 +1,13 @@
+[package]
+name = "double-slit"
+description = "A quantum wave packet through two slits: interference on a screen, from the Schrodinger equation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+virial.workspace = true
+virial-quantum.workspace = true
+virial-render.workspace = true
+bytemuck.workspace = true

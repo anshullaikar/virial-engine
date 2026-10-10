@@ -1,0 +1,22 @@
+[package]
+name = "virial-quantum"
+description = "Quantum motion for Virial: the time-dependent Schrodinger equation on the GPU, split-operator with GPU FFTs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+virial-precision.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
+
+[dev-dependencies]
+virial-gpu.workspace = true
+pollster.workspace = true

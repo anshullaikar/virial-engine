@@ -76,7 +76,7 @@ When two of these conflict, the higher one wins.
 | Precision | f32 on the GPU (WGSL has no f64), made trustworthy with fixed-point accumulation, relative coordinates and double-float maths, all checked against a 64-bit CPU reference |
 | Integrators | Energy-conserving (symplectic) methods. Velocity Verlet for particles |
 | Gravity solvers | Exact all pairs by default; Barnes–Hut as an explicit choice for large N, never silently |
-| Physics scope, in order | Classical mechanics (particles: gravity, molecular dynamics, granular) → thermodynamics → quantum motion |
+| Physics scope, in order | Classical mechanics (particles: gravity, molecular dynamics, granular) → thermodynamics → quantum motion. Quantum was pulled forward after 0.1.0 at the user's request (2026-10-10): `virial-quantum` exists; thermodynamics (phase change, heat conduction) is next |
 | Games | Later, separate branch. AVBD rigid bodies live there because they trade energy for stability |
 | Showcase videos | Gas reaching equilibrium, galaxy collision, granular avalanche |
 | Data output | Per-frame measurements as **CSV** with 17 significant digits; per-particle snapshots as NumPy **`.npy`** (exact binary, no dependencies, loads with `np.load`); a **`run.json`** per run with scene settings, time step, GPU, Virial version and git commit. Parquet or HDF5 only if a real need appears |
@@ -98,6 +98,14 @@ Release targets (estimates until measured): energy drift below 1e-6 over 10⁶
 Kepler steps; ideal gas law within 1%; identical reruns; 1M short-range
 particles in live preview at 60 fps; 65,536 bodies of exact gravity at 10 or
 more steps per second; wasm at most 3 MB gzipped.
+
+## After 0.1.0
+
+| What | Status |
+|---|---|
+| Quantum motion (`virial-quantum`): 2D time-dependent Schrödinger equation, split-operator with GPU FFTs, absorbing edges, imaginary-time ground states, a detector screen | Done, unreleased. Free packet, coherent state, harmonic ground state, tunnelling (Eckart barrier, within 0.07%) and double-slit dark fringes (within 0.02 wavelengths) all match exact results. Example and video: `double-slit` |
+| Thermodynamics: liquid–gas coexistence, heat conduction (Fourier's law) | Next |
+| Browser video export (WebCodecs) | To do |
 
 ## Known gaps
 
@@ -127,5 +135,8 @@ more steps per second; wasm at most 3 MB gzipped.
   over frames in chunks of 1024 bodies, with a result bit-identical to a
   complete measurement, so the preview no longer pauses.
 - **Safari** is untested.
+- **Quantum probability leaks about 5e-8 per step** through f32 rounding in
+  the FFTs, at any grid size (measured; tested as a bound). Over 10,000 steps
+  that is 5e-4. Fixing it needs double-float FFTs, at roughly 4x the cost.
 - **CI runs only on release tags** (and by hand). Day-to-day, `scripts/check.sh`
   is the gate; it runs the GPU tests that CI can't, since CI has no GPU.
