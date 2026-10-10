@@ -29,8 +29,12 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo install --locked wasm-bindgen-cli --version 0.2.128
-      - run: scripts/build-web.sh triangle
-      - name: Check the wasm size budget (3 MB gzipped)
+      - name: Build every example for the web and check the size budget (3 MB gzipped)
         run: |
-          bytes=$(gzip -9 -c examples/triangle/pkg/triangle_bg.wasm | wc -c)
-          test "$bytes" -le 3145728
+          for dir in examples/*/; do
+            name=$(basename "$dir")
+            [ -f "$dir/Cargo.toml" ] || continue
+            scripts/build-web.sh "$name"
+            bytes=$(gzip -9 -c "examples/$name/pkg/${name}_bg.wasm" | wc -c)
+            test "$bytes" -le 3145728
+          done

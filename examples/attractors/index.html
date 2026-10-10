@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Virial: attractors</title>
+    <link rel="stylesheet" href="../style.css" />
+  </head>
+  <body>
+    <nav class="controls" aria-label="Particle count and workload"></nav>
+    <script type="module">
+      import { load } from '../loader.js';
+
+      // Links that reload with a different count or workload
+      const params = new URLSearchParams(location.search);
+      const n = params.get('n') ?? '250000';
+      const work = params.get('work') ?? 'light';
+      const nav = document.querySelector('.controls');
+      const link = (label, next) => {
+        const a = document.createElement('a');
+        const q = new URLSearchParams({ n, work, ...next });
+        a.href = `?${q}`;
+        a.textContent = label;
+        if (q.toString() === new URLSearchParams({ n, work }).toString()) a.setAttribute('aria-current', 'true');
+        nav.append(a);
+      };
+      for (const [label, value] of [['100k', 100000], ['1M', 1000000], ['4M', 4000000], ['16M', 16000000]]) {
+        link(label, { n: String(value) });
+      }
+      link('Light', { work: 'light' });
+      link('Heavy', { work: 'heavy' });
+
+      load('attractors');
+    </script>
+  </body>
+</html>

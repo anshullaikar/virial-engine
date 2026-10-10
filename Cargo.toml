@@ -24,6 +24,8 @@ winit = "0.30.13"
 log = "0.4.34"
 pollster = "1.0.1"
 env_logger = "0.11.11"
+web-time = "1.1.0"
+bytemuck = { version = "1.25.2", features = ["derive"] }
 
 # wasm-bindgen must match the installed wasm-bindgen-cli exactly
 wasm-bindgen = "=0.2.128"

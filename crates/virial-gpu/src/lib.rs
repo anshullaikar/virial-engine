@@ -8,6 +8,9 @@ use std::fmt;
 
 pub use wgpu;
 
+mod timer;
+pub use timer::GpuTimer;
+
 /// Limits the engine's kernels are written against. These are WebGPU's
 /// defaults, so any browser that supports WebGPU can run them.
 pub fn required_limits() -> wgpu::Limits {
@@ -74,15 +77,21 @@ impl Gpu {
             .await
             .map_err(GpuError::NoAdapter)?;
 
-        let required = required_limits();
         let available = adapter.limits();
         let mut too_low = Vec::new();
-        required.check_limits_with_fail_fn(&available, false, |name, want, have| {
+        required_limits().check_limits_with_fail_fn(&available, false, |name, want, have| {
             too_low.push(format!("{name}: has {have}, needs {want}"));
         });
         if !too_low.is_empty() {
             return Err(GpuError::LimitsTooLow(too_low.join(", ")));
         }
+        // Kernels are written for the defaults, but scene size is memory, so
+        // take all the buffer memory the adapter offers
+        let required = wgpu::Limits {
+            max_buffer_size: available.max_buffer_size,
+            max_storage_buffer_binding_size: available.max_storage_buffer_binding_size,
+            ..required_limits()
+        };
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -129,5 +138,17 @@ impl Gpu {
 
     pub fn surface_format(&self) -> wgpu::TextureFormat {
         self.config.format
+    }
+
+    /// Width divided by height of the surface.
+    pub fn aspect(&self) -> f32 {
+        self.config.width as f32 / self.config.height.max(1) as f32
+    }
+
+    /// Whether GPU pass timings are available on this device.
+    pub fn has_timestamps(&self) -> bool {
+        self.device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
     }
 }

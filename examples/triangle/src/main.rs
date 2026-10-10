@@ -1,6 +1,6 @@
 //! Milestone 1: the same binary draws a triangle in the browser and natively.
 
-use virial::{Config, Frame, Gpu, Scene, wgpu};
+use virial::{Config, Context, Frame, Gpu, Scene, wgpu};
 
 struct Triangle {
     pipeline: wgpu::RenderPipeline,
@@ -37,7 +37,7 @@ impl Scene for Triangle {
         Self { pipeline }
     }
 
-    fn render(&mut self, _gpu: &Gpu, frame: Frame<'_>) {
+    fn render(&mut self, _ctx: &mut Context<'_>, frame: Frame<'_>) {
         let mut pass = frame
             .encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {

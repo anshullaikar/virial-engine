@@ -1,0 +1,11 @@
+[package]
+name = "attractors"
+description = "Step 2: the gpu-playground WebGPU particle demo, ported to Virial as a speed baseline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+virial.workspace = true
+bytemuck.workspace = true
