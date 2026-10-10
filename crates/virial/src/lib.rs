@@ -14,10 +14,14 @@ use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
 mod args;
+pub mod data;
 mod input;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod record;
 mod stats;
 
 pub use args::{arg, args};
+pub use data::DataLog;
 pub use input::Input;
 pub use stats::Stats;
 pub use virial_gpu::{Gpu, GpuError, GpuTimer, wgpu};
@@ -51,8 +55,11 @@ pub struct Time {
 pub struct Context<'a> {
     pub gpu: &'a Gpu,
     pub input: &'a Input,
+    /// Wall-clock time in the live preview; the video clock when recording
     pub time: Time,
     pub stats: &'a mut Stats,
+    /// Measurements, snapshots and run metadata
+    pub data: &'a mut DataLog,
 }
 
 /// What a frame hands the scene to draw with.
@@ -77,18 +84,32 @@ pub trait Scene: 'static {
 
     /// Record this frame's GPU work into `frame.encoder`.
     fn render(&mut self, ctx: &mut Context<'_>, frame: Frame<'_>);
+
+    /// Called once after the last frame of a recording: log final
+    /// measurements and snapshots here.
+    fn finish(&mut self, _ctx: &mut Context<'_>) {}
 }
 
 /// Opens the window, starts the GPU and runs `S` until the window closes.
 /// In the browser the canvas is appended to `<body>` and this returns at once.
+///
+/// Natively, the setting `record=<dir>` renders offline instead (see
+/// [`record`]): `width`, `height`, `fps`, `seconds`, `video=0`.
 pub fn run<S: Scene>(config: Config) {
     init_logging();
+
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(dir) = args().get("record").filter(|d| !d.is_empty()) {
+        record::record::<S>(config.title, &record::RecordSettings::from_args(dir));
+        return;
+    }
 
     let event_loop = EventLoop::<GpuReady>::with_user_event()
         .build()
         .expect("could not create the event loop");
     let app = App::<S> {
         stats: Stats::new(config.title),
+        data: DataLog::preview(),
         config,
         proxy: event_loop.create_proxy(),
         window: None,
@@ -128,6 +149,7 @@ struct App<S> {
     running: Option<Running<S>>,
     input: Input,
     stats: Stats,
+    data: DataLog,
 }
 
 impl<S: Scene> ApplicationHandler<GpuReady> for App<S> {
@@ -227,7 +249,7 @@ impl<S: Scene> ApplicationHandler<GpuReady> for App<S> {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(running) = &mut self.running {
-                    running.draw(&self.input, &mut self.stats);
+                    running.draw(&self.input, &mut self.stats, &mut self.data);
                     if let Some(window) = &self.window {
                         self.stats.show(window);
                     }
@@ -243,7 +265,7 @@ impl<S: Scene> ApplicationHandler<GpuReady> for App<S> {
 }
 
 impl<S: Scene> Running<S> {
-    fn draw(&mut self, input: &Input, stats: &mut Stats) {
+    fn draw(&mut self, input: &Input, stats: &mut Stats, data: &mut DataLog) {
         // Native backends deliver buffer-map callbacks here; on the web the
         // browser delivers them itself
         let _ = self.gpu.device.poll(wgpu::PollType::Poll);
@@ -270,15 +292,17 @@ impl<S: Scene> Running<S> {
             input,
             time,
             stats,
+            data,
         };
         self.scene.update(&mut ctx);
 
         let gpu = &self.gpu;
-        let (texture, suboptimal) = match gpu.surface.get_current_texture() {
+        let surface = gpu.surface.as_ref().expect("the live preview has a window");
+        let (texture, suboptimal) = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
             wgpu::CurrentSurfaceTexture::Outdated => {
-                gpu.surface.configure(&gpu.device, &gpu.config);
+                surface.configure(&gpu.device, &gpu.config);
                 return;
             }
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
@@ -312,7 +336,7 @@ impl<S: Scene> Running<S> {
         }
         gpu.queue.present(texture);
         if suboptimal {
-            gpu.surface.configure(&gpu.device, &gpu.config);
+            surface.configure(&gpu.device, &gpu.config);
         }
     }
 }

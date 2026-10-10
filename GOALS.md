@@ -44,6 +44,10 @@ When two of these conflict, the higher one wins.
   look 10× slower than they are. Bring the window to the front (and keep it
   there) before reading fps, GPU timings or steps per second, and say in the
   result that it was measured in the foreground.
+- **Benchmark a cool machine.** The development machine is a fanless
+  MacBook Air M1: sustained GPU load throttles it, and other GPU work (an
+  open demo tab) competes. Close other GPU work, let it cool for a few
+  minutes, and run the benchmark more than once.
 - **Test precision tricks on the GPU, not just the CPU.** Metal compiles in
   fast-math mode and has silently undone two of them (double-float maths and
   the fixed-point split). WGSL that depends on exact float behaviour goes
@@ -77,8 +81,8 @@ When two of these conflict, the higher one wins.
 | 3 | Precision core | Done: double-float within 2e-14 of f64 on GPU; fixed-point sums exact |
 | 4 | Particle dynamics (gravity, Verlet, measurements) | Done: Kepler energy exact to 13 digits, drift 3.4e-7 over 100 orbits, reruns bit-identical |
 | 5 | Renderer for science (sprites, colour maps, cameras, readouts) | Started: galaxies example has glowing sprites and an orbit camera |
-| 6 | Video and data export on a simulation clock | Not started (the galaxies page has a real-time record button as a stopgap) |
-| 7 | Bridge to thermodynamics: temperature, pressure, thermostats, granular contact | Not started |
+| 6 | Video and data export on a simulation clock | Done natively: `record=<dir>` renders MP4 (ffmpeg) plus frames.csv, measurements.csv, .npy snapshots and run.json; reruns give identical frame hashes. 60 s 1080p60 galaxy collision rendered in 7.5 min. Browser offline export (WebCodecs) still to do |
+| 7 | Bridge to thermodynamics | Lennard-Jones gas done: ideal gas law within 0.76%, matches the virial expansion within 1.3 standard errors, relaxes to Maxwell-Boltzmann (KS 0.003) at constant energy. Still to do: Nosé–Hoover thermostat, granular contact (Hertz) for the avalanche |
 | 8 | Validation report and release | Not started |
 
 Release targets (estimates until measured): energy drift below 1e-6 over 10⁶
@@ -91,10 +95,13 @@ more steps per second; wasm at most 3 MB gzipped.
 - **All-pairs gravity speed:** 65,536 bodies run at 6.1 steps/s on an M1
   (2.6e10 interactions/s), against the 10 steps/s target. Next levers:
   Barnes–Hut or FMM for large N; making the low-part correction optional.
-- **Fixed time steps lose accuracy in close encounters:** the galaxies scene
-  holds energy to about 1e-6 before the galaxies meet, but drift grows to
-  about 5e-4 by t = 88 as stars swing close past the cores (dt 0.005,
-  softening 0.05). Next lever: smaller or adaptive (block) time steps.
+- **Galaxy energy drift depends on the step:** worst drift to t = 90 (4096
+  bodies) is 1.0e-3 at dt 0.005, 1.5e-4 at 0.0025 and 4.3e-5 at 0.00125,
+  after switching force sums to per-tile f32 plus double-float totals (before
+  that, drift stalled at 1.7e-4 however small the step). The scene now
+  defaults to dt 0.0025. Next lever: adaptive (block) time steps.
+- **Lennard-Jones energy drift** is 4e-5 over 15,000 steps because the force
+  jumps to zero at the cutoff; a force-shifted potential would fix it.
 - **Precise measurements are expensive:** about ten force passes (213 ms at
   16k bodies). Plan: snapshot the state, then measure the snapshot spread over
   several frames.

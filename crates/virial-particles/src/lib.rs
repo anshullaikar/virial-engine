@@ -14,6 +14,8 @@
 //!
 //! Units are whatever the caller uses consistently; SI by convention.
 
+pub mod lennard_jones;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 

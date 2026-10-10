@@ -7,9 +7,14 @@
 //! start, measured on the GPU.
 //!
 //! Units: G = 1, each core has mass 1, disks have radius about 2.
-//! Settings: `n` (bodies, default 8192), `steps` (steps per frame, default 4).
+//! Settings: `n` (bodies, default 8192), `dt` (step, default 0.0025), `steps`
+//! (steps per frame, default 8),
+//! camera `yaw`, `pitch`, `distance` and `spin` (radians per second).
 //! Controls: drag to orbit, scroll to zoom, Space to pause, R to restart,
 //! [ and ] to slow down or speed up.
+//!
+//! Render a video natively:
+//! `cargo run --release -p galaxies -- record=out/galaxies seconds=60 n=16384 spin=0.05`
 
 use std::f64::consts::TAU;
 
@@ -21,13 +26,17 @@ const GRAVITY: Gravity = Gravity {
     g: 1.0,
     softening: 0.05,
 };
-const DT: f64 = 0.005;
+/// Default step. The time-step study (`timestep_study` below) found drift to
+/// t = 90 of 1.0e-3 at dt 0.005, 1.5e-4 at 0.0025 and 4.3e-5 at 0.00125.
+const DT: f64 = 0.0025;
 const CORE_MASS: f64 = 1.0;
 /// Each disk's mass, shared by its stars
 const DISK_MASS: f64 = 0.15;
-/// Frames between energy measurements. Each costs about ten force passes, so
-/// the preview pauses briefly when one runs.
+/// Frames between energy measurements in the live preview. Each costs about
+/// ten force passes, so the preview pauses briefly when one runs.
 const MEASURE_EVERY: u64 = 300;
+/// Frames between measurements when recording, where time doesn't matter
+const MEASURE_EVERY_RECORDING: u64 = 30;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -186,7 +195,9 @@ struct Galaxies {
     yaw: f32,
     pitch: f32,
     distance: f32,
+    spin: f32,
     steps_per_frame: u32,
+    measure_every: u64,
     paused: bool,
     frames: u64,
     first: Option<Measurement>,
@@ -222,7 +233,13 @@ impl Galaxies {
     }
 
     fn restart(&mut self, gpu: &Gpu) {
-        self.sim = NBody::new(&gpu.device, &gpu.queue, &encounter(self.n), GRAVITY, DT);
+        self.sim = NBody::new(
+            &gpu.device,
+            &gpu.queue,
+            &encounter(self.n),
+            GRAVITY,
+            self.sim.dt(),
+        );
         self.group = Self::bind(gpu, &self.layout, &self.view, &self.sim);
         self.first = None;
         self.latest = None;
@@ -233,8 +250,9 @@ impl Galaxies {
 impl Scene for Galaxies {
     fn new(gpu: &Gpu) -> Self {
         let n = arg("n", 8_192usize).clamp(256, 262_144);
-        let steps_per_frame = arg("steps", 4u32).clamp(1, 64);
-        let sim = NBody::new(&gpu.device, &gpu.queue, &encounter(n), GRAVITY, DT);
+        let steps_per_frame = arg("steps", 8u32).clamp(1, 64);
+        let dt = arg("dt", DT);
+        let sim = NBody::new(&gpu.device, &gpu.queue, &encounter(n), GRAVITY, dt);
         let device = &gpu.device;
 
         let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
@@ -310,10 +328,12 @@ impl Scene for Galaxies {
             view,
             layout,
             group,
-            yaw: 0.35,
-            pitch: 0.9,
-            distance: 14.0,
+            yaw: arg("yaw", 0.35),
+            pitch: arg("pitch", 0.9),
+            distance: arg("distance", 14.0),
+            spin: arg("spin", 0.0),
             steps_per_frame,
+            measure_every: MEASURE_EVERY,
             paused: false,
             frames: 0,
             first: None,
@@ -323,6 +343,19 @@ impl Scene for Galaxies {
     }
 
     fn update(&mut self, ctx: &mut Context<'_>) {
+        if self.frames == 0 && ctx.data.is_recording() {
+            self.measure_every = MEASURE_EVERY_RECORDING;
+            let data = &mut *ctx.data;
+            data.meta("bodies", self.n);
+            data.meta("dt", self.sim.dt());
+            data.meta("G", GRAVITY.g);
+            data.meta("softening", GRAVITY.softening);
+            data.meta("steps_per_frame", self.steps_per_frame);
+            data.meta("core_mass", CORE_MASS);
+            data.meta("disk_mass", DISK_MASS);
+            #[cfg(not(target_arch = "wasm32"))]
+            snapshot(data, "initial", &self.sim.read_bodies());
+        }
         let input = ctx.input;
         if input.pressed(KeyCode::Space) {
             self.paused = !self.paused;
@@ -340,12 +373,14 @@ impl Scene for Galaxies {
         self.yaw -= dx * 2.5;
         self.pitch = (self.pitch + dy * 2.5).clamp(0.05, 3.09);
         self.distance = (self.distance * (1.0 - input.scroll() * 0.1)).clamp(2.0, 80.0);
+        self.yaw += self.spin * ctx.time.dt;
 
         // Measurements recorded last frame can start reading back now
         self.sim.after_submit();
         for m in self.sim.poll() {
-            self.first.get_or_insert(m);
+            let first = *self.first.get_or_insert(m);
             self.latest = Some(m);
+            log_measurement(ctx.data, &m, &first);
         }
 
         let aspect = ctx.gpu.aspect();
@@ -387,8 +422,9 @@ impl Scene for Galaxies {
         ctx.stats.set(
             "Simulation time",
             format!(
-                "{:.2} (dt {DT}, {} steps/frame)",
+                "{:.2} (dt {}, {} steps/frame)",
                 self.sim.time(),
+                self.sim.dt(),
                 self.steps_per_frame
             ),
         );
@@ -418,7 +454,7 @@ impl Scene for Galaxies {
                 frame.timer.and_then(|t| t.compute("gravity")),
             );
         }
-        if self.frames.is_multiple_of(MEASURE_EVERY) {
+        if self.frames.is_multiple_of(self.measure_every) {
             self.sim.measure(frame.encoder);
         }
         self.frames += 1;
@@ -448,10 +484,138 @@ impl Scene for Galaxies {
         pass.set_bind_group(0, &self.group, &[]);
         pass.draw(0..6, 0..self.n as u32);
     }
+
+    fn finish(&mut self, ctx: &mut Context<'_>) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Measurements still reading back, then a final one
+            self.sim.after_submit();
+            let _ = ctx.gpu.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
+            let mut done = self.sim.poll();
+            done.push(self.sim.measure_now());
+            for m in done {
+                let first = *self.first.get_or_insert(m);
+                log_measurement(ctx.data, &m, &first);
+            }
+            snapshot(ctx.data, "final", &self.sim.read_bodies());
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = ctx;
+    }
+}
+
+fn log_measurement(data: &mut virial::DataLog, m: &Measurement, first: &Measurement) {
+    data.row(&[
+        ("step", m.step as f64),
+        ("time", m.time),
+        ("kinetic", m.kinetic),
+        ("potential", m.potential),
+        ("energy", m.energy()),
+        (
+            "relative_drift",
+            (m.energy() - first.energy()) / first.energy().abs(),
+        ),
+        ("momentum_x", m.momentum[0]),
+        ("momentum_y", m.momentum[1]),
+        ("momentum_z", m.momentum[2]),
+    ]);
+}
+
+/// Writes `<name>.npy` with one row per body: x, y, z, vx, vy, vz, mass.
+#[cfg(not(target_arch = "wasm32"))]
+fn snapshot(data: &mut virial::DataLog, name: &str, bodies: &[Body]) {
+    let flat: Vec<f64> = bodies
+        .iter()
+        .flat_map(|b| {
+            [
+                b.pos[0], b.pos[1], b.pos[2], b.vel[0], b.vel[1], b.vel[2], b.mass,
+            ]
+        })
+        .collect();
+    data.snapshot(name, &[bodies.len(), 7], &flat);
 }
 
 fn main() {
     virial::run::<Galaxies>(Config {
         title: "Virial: galaxies",
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use virial::record::{RecordSettings, record};
+
+    #[test]
+    fn recordings_are_identical_frame_for_frame() {
+        if !virial::record::gpu_available() {
+            eprintln!("skipped: no GPU");
+            return;
+        }
+        let run = |name: &str| {
+            let dir =
+                std::env::temp_dir().join(format!("virial-galaxies-{name}-{}", std::process::id()));
+            let settings = RecordSettings {
+                dir: dir.clone(),
+                width: 320,
+                height: 180,
+                fps: 30,
+                frames: 40,
+                video: false,
+            };
+            let recording = record::<Galaxies>("galaxies test", &settings);
+            let measurements = std::fs::read_to_string(dir.join("measurements.csv")).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            (recording.frame_hashes, measurements)
+        };
+        let (a, b) = (run("a"), run("b"));
+        assert_eq!(a.0.len(), 40);
+        assert!(
+            a.0.windows(2).any(|w| w[0] != w[1]),
+            "frames should change as the galaxies move"
+        );
+        assert_eq!(a.0, b.0, "frame hashes differ between runs");
+        assert_eq!(a.1, b.1, "measurements differ between runs");
+        println!(
+            "40 frames identical across two runs; measurements:\n{}",
+            a.1
+        );
+    }
+
+    /// Energy drift through the encounter at three step sizes. Run with
+    /// `cargo test --release -p galaxies timestep -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "study: run explicitly"]
+    fn timestep_study() {
+        let Ok(gpu) = pollster::block_on(virial_gpu::Compute::new()) else {
+            eprintln!("skipped: no GPU");
+            return;
+        };
+        let bodies = encounter(4096);
+        let until = 90.0;
+        let steps: Vec<f64> = virial::arg("dts", String::from("0.005,0.0025,0.00125"))
+            .split(',')
+            .filter_map(|v| v.parse().ok())
+            .collect();
+        for dt in steps {
+            let mut sim = NBody::new(&gpu.device, &gpu.queue, &bodies, GRAVITY, dt);
+            let start = sim.measure_now();
+            let mut worst = 0.0f64;
+            let checkpoints = 18;
+            let steps = (until / dt / checkpoints as f64).round() as u64;
+            let clock = std::time::Instant::now();
+            for _ in 0..checkpoints {
+                sim.run(steps);
+                let m = sim.measure_now();
+                worst = worst.max(((m.energy() - start.energy()) / start.energy()).abs());
+            }
+            println!(
+                "dt {dt}: worst energy drift to t = {until} is {worst:.2e} ({:.1} s for 4096 bodies)",
+                clock.elapsed().as_secs_f64()
+            );
+        }
+    }
 }

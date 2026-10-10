@@ -92,12 +92,16 @@ pub(crate) async fn request_device(
     Ok(result)
 }
 
-/// The device, queue and window surface.
+/// The device, queue and the target frames are drawn to: a window surface,
+/// or (for offline rendering) nothing, with `config` describing the
+/// offscreen frames.
 pub struct Gpu {
     pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    pub surface: wgpu::Surface<'static>,
+    /// `None` when rendering offline
+    pub surface: Option<wgpu::Surface<'static>>,
+    /// Format and size of the frames
     pub config: wgpu::SurfaceConfiguration,
 }
 
@@ -133,7 +137,31 @@ impl Gpu {
             adapter,
             device,
             queue,
-            surface,
+            surface: Some(surface),
+            config,
+        })
+    }
+
+    /// A GPU with no window, drawing `width` × `height` frames in sRGB, the
+    /// same colour handling as a window on most platforms.
+    pub async fn headless(width: u32, height: u32) -> Result<Self, GpuError> {
+        let compute = Compute::new().await?;
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            width,
+            height,
+            present_mode: wgpu::PresentMode::Fifo,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+            view_formats: Vec::new(),
+            color_space: wgpu::SurfaceColorSpace::Auto,
+        };
+        Ok(Self {
+            adapter: compute.adapter,
+            device: compute.device,
+            queue: compute.queue,
+            surface: None,
             config,
         })
     }
@@ -145,7 +173,9 @@ impl Gpu {
         }
         self.config.width = width;
         self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.config);
+        }
     }
 
     pub fn surface_format(&self) -> wgpu::TextureFormat {

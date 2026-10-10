@@ -10,3 +10,7 @@ publish = false
 virial.workspace = true
 virial-particles.workspace = true
 bytemuck.workspace = true
+
+[dev-dependencies]
+virial-gpu.workspace = true
+pollster.workspace = true

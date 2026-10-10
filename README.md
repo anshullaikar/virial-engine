@@ -9,7 +9,7 @@ Named after the virial theorem, which links a system's kinetic and potential
 energy. The same theorem describes galaxies settling into equilibrium and gives
 a gas its pressure.
 
-Status: step 4 of 8 towards 0.1.0. Virial runs scenes in a window or a browser
+Status: steps 1–4 and 6 done, step 7 well under way, of 8 towards 0.1.0. Virial runs scenes in a window or a browser
 canvas through WebGPU (browser) or Metal / Vulkan / DX12 (native), with mouse
 and keyboard input, a stats panel and GPU pass timings.
 
@@ -83,8 +83,37 @@ reference in `virial-reference`:
 | 512-body cluster energy vs CPU f64 | identical to 13 digits |
 | Rerun of a 4096-body simulation | bit-identical state and measurements |
 
-Run the GPU tests with `cargo test --release -p virial-precision -p virial-particles`
-(they skip on machines without a GPU).
+## Thermodynamics
+
+`virial_particles::lennard_jones` simulates a Lennard-Jones fluid in a
+periodic box: neighbour search on the GPU with a cell grid (sorted per cell so
+reruns are bit-identical), temperature from kinetic energy, pressure from the
+virial theorem, and an optional Langevin thermostat with reproducible random
+numbers. Validation on an M1:
+
+| Check | Result |
+|---|---|
+| Cell grid vs all pairs (1000 particles) | Potential energy within 4e-7, virial within 2.6e-7 |
+| Dilute gas (density 0.01, T = 2) | PV/NkT = 0.99244 ± 0.00012: within 0.76% of the ideal gas law, and within 1.3 standard errors of the virial expansion 1 + B₂ρ = 0.99228 |
+| Gas starting with every particle at the same speed, no thermostat | Kolmogorov–Smirnov distance from Maxwell–Boltzmann 0.61 → 0.003 after 60 time units, energy drift 4e-5 |
+| Thermostatted reruns | Bit-identical |
+
+Run all GPU tests with `cargo test --release` (they skip on machines without
+a GPU), or everything with `scripts/check.sh`.
+
+## Videos and data
+
+Any example renders offline natively with `record=<dir>`:
+
+```sh
+cargo run --release -p galaxies -- record=renders/galaxies seconds=60 n=16384 spin=0.04
+```
+
+Each frame covers a fixed slice of simulated time however long it takes. The
+directory gets `video.mp4` (needs ffmpeg), `frames.csv` (a hash of every frame:
+reruns match exactly), `measurements.csv` (exact values), `.npy` snapshots of
+the full state, and `run.json` (settings, GPU, version, git commit). Options:
+`width`, `height`, `fps`, `seconds`, `video=0` to skip encoding.
 
 ## Layout
 

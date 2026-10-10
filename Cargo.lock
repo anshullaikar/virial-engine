@@ -602,7 +602,9 @@ name = "galaxies"
 version = "0.0.1"
 dependencies = [
  "bytemuck",
+ "pollster",
  "virial",
+ "virial-gpu",
  "virial-particles",
 ]
 

@@ -101,12 +101,18 @@ fn accelerations(base: u32, li: u32) -> Pair {
     // With softening, a body's pull on itself and on padding (mass 0) is
     // exactly zero, so the per-pair check is only needed for exact gravity
     let exact = params.eps2 == 0.0;
-    var a0 = vec3f(0.0);
-    var a1 = vec3f(0.0);
+    // Each tile's 256 terms are summed in f32, then the tile totals in
+    // double-float: one rounding per tile instead of one per body
+    var a0h = vec3f(0.0);
+    var a0l = vec3f(0.0);
+    var a1h = vec3f(0.0);
+    var a1l = vec3f(0.0);
     let tiles = (params.count + TILE - 1u) / TILE;
     for (var t = 0u; t < tiles; t++) {
         load_tile(t, li);
         workgroupBarrier();
+        var t0 = vec3f(0.0);
+        var t1 = vec3f(0.0);
         for (var k = 0u; k < TILE; k++) {
             let p = tile_hi[k];
             let q = tile_lo[k].xyz;
@@ -120,11 +126,25 @@ fn accelerations(base: u32, li: u32) -> Pair {
                 inv0 = select(inv0, 0.0, pad || j == i0);
                 inv1 = select(inv1, 0.0, pad || j == i1);
             }
-            a0 += d0 * (p.w * inv0 * inv0 * inv0);
-            a1 += d1 * (p.w * inv1 * inv1 * inv1);
+            t0 += d0 * (p.w * inv0 * inv0 * inv0);
+            t1 += d1 * (p.w * inv1 * inv1 * inv1);
         }
+        // Components written out: indexing a vector with a loop variable
+        // pushes it out of registers
+        let x0 = df_add_f(vec2f(a0h.x, a0l.x), t0.x);
+        let y0 = df_add_f(vec2f(a0h.y, a0l.y), t0.y);
+        let z0 = df_add_f(vec2f(a0h.z, a0l.z), t0.z);
+        let x1 = df_add_f(vec2f(a1h.x, a1l.x), t1.x);
+        let y1 = df_add_f(vec2f(a1h.y, a1l.y), t1.y);
+        let z1 = df_add_f(vec2f(a1h.z, a1l.z), t1.z);
+        a0h = vec3f(x0.x, y0.x, z0.x);
+        a0l = vec3f(x0.y, y0.y, z0.y);
+        a1h = vec3f(x1.x, y1.x, z1.x);
+        a1l = vec3f(x1.y, y1.y, z1.y);
         workgroupBarrier();
     }
+    let a0 = a0h + a0l;
+    let a1 = a1h + a1l;
     return Pair(a0 * params.g, a1 * params.g);
 }
 
