@@ -178,6 +178,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "avalanche"
+version = "0.0.1"
+dependencies = [
+ "virial",
+ "virial-particles",
+ "virial-render",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -601,11 +610,21 @@ dependencies = [
 name = "galaxies"
 version = "0.0.1"
 dependencies = [
- "bytemuck",
  "pollster",
  "virial",
  "virial-gpu",
  "virial-particles",
+ "virial-render",
+]
+
+[[package]]
+name = "gas"
+version = "0.0.1"
+dependencies = [
+ "bytemuck",
+ "virial",
+ "virial-particles",
+ "virial-render",
 ]
 
 [[package]]
@@ -2020,6 +2039,14 @@ dependencies = [
 [[package]]
 name = "virial-reference"
 version = "0.0.1"
+
+[[package]]
+name = "virial-render"
+version = "0.0.1"
+dependencies = [
+ "bytemuck",
+ "wgpu",
+]
 
 [[package]]
 name = "walkdir"

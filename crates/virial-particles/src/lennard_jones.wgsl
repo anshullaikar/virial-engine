@@ -36,6 +36,12 @@ struct Params {
     c2: f32,
     // Elements per section in `state` and `ints`
     segment: u32,
+    // Shifted-force cutoff: F(r_c), subtracted so the force also reaches
+    // zero at the cutoff (0 for the plain shifted potential)
+    force_shift: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -159,9 +165,15 @@ fn interactions(i: u32) -> Pair {
                         let s6 = inv2 * inv2 * inv2;
                         let s12 = s6 * s6;
                         // r . F for this pair, and the force on i
-                        let rf = 24.0 * (2.0 * s12 - s6);
+                        var rf = 24.0 * (2.0 * s12 - s6);
+                        var u = 4.0 * (s12 - s6) - params.shift;
+                        if params.force_shift != 0.0 {
+                            let r = sqrt(r2);
+                            rf -= r * params.force_shift;
+                            u += (r - sqrt(params.rc2)) * params.force_shift;
+                        }
                         out.a -= d * (rf * inv2);
-                        out.pe = df_add_f(out.pe, 2.0 * (s12 - s6) - 0.5 * params.shift);
+                        out.pe = df_add_f(out.pe, 0.5 * u);
                         out.w = df_add_f(out.w, 0.5 * rf);
                     }
                 }

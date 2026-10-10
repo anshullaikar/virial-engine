@@ -7,7 +7,8 @@
 //! unit is 2.15e-12 s.
 //!
 //! The potential 4 (r^-12 - r^-6) is cut at `cutoff` and shifted so it's
-//! continuous there. Temperature comes from kinetic energy; pressure from the
+//! continuous there; optionally the force is shifted too (see
+//! [`Settings::shifted_force`]). Temperature comes from kinetic energy; pressure from the
 //! virial theorem, P = (2 KE + W) / (3 V) with W the sum of r . F over pairs.
 
 use std::sync::Arc;
@@ -44,6 +45,10 @@ pub struct Settings {
     pub dt: f64,
     /// `None`: constant energy (velocity Verlet)
     pub thermostat: Option<Langevin>,
+    /// Shift the force as well as the energy, so both reach zero smoothly at
+    /// the cutoff. Conserves energy much better; slightly changes the model,
+    /// so compare thermodynamics against results for the same potential.
+    pub shifted_force: bool,
 }
 
 /// Totals at one step.
@@ -96,6 +101,8 @@ struct Params {
     c1: f32,
     c2: f32,
     segment: u32,
+    force_shift: f32,
+    _pad: [f32; 3],
 }
 
 const WORKGROUP: u32 = 256;
@@ -204,6 +211,12 @@ impl LennardJones {
         let rc2 = settings.cutoff * settings.cutoff;
         let inv6 = 1.0 / (rc2 * rc2 * rc2);
         let shift = 4.0 * (inv6 * inv6 - inv6);
+        // Force magnitude at the cutoff: 24 (2 rc^-12 - rc^-6) / rc
+        let force_shift = if settings.shifted_force {
+            24.0 * (2.0 * inv6 * inv6 - inv6) / settings.cutoff
+        } else {
+            0.0
+        };
         let (thermostat, c1, c2) = match settings.thermostat {
             Some(t) => {
                 let c1 = (-t.friction * settings.dt).exp();
@@ -228,6 +241,8 @@ impl LennardJones {
             c1: c1 as f32,
             c2: c2 as f32,
             segment,
+            force_shift: force_shift as f32,
+            _pad: [0.0; 3],
         };
 
         let usage = wgpu::BufferUsages::STORAGE

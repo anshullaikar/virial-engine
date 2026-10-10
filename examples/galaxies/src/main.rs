@@ -18,9 +18,9 @@
 
 use std::f64::consts::TAU;
 
-use bytemuck::{Pod, Zeroable};
 use virial::{Config, Context, Frame, Gpu, KeyCode, Scene, arg, wgpu};
 use virial_particles::{Body, Gravity, Measurement, NBody};
+use virial_render::{Camera, CameraPath, Coloring, Overlay, Particles, Style};
 
 const GRAVITY: Gravity = Gravity {
     g: 1.0,
@@ -37,18 +37,6 @@ const DISK_MASS: f64 = 0.15;
 const MEASURE_EVERY: u64 = 300;
 /// Frames between measurements when recording, where time doesn't matter
 const MEASURE_EVERY_RECORDING: u64 = 30;
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct View {
-    view_proj: [[f32; 4]; 4],
-    viewport: [f32; 2],
-    size: f32,
-    half: u32,
-    intensity: f32,
-    heavy_mass: f32,
-    _pad: [f32; 2],
-}
 
 /// xorshift: deterministic, so every run starts from the same galaxies
 struct Random(u64);
@@ -140,61 +128,15 @@ fn encounter(n: usize) -> Vec<Body> {
     bodies
 }
 
-fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> [[f32; 4]; 4] {
-    let f = 1.0 / (fov_y / 2.0).tan();
-    [
-        [f / aspect, 0.0, 0.0, 0.0],
-        [0.0, f, 0.0, 0.0],
-        [0.0, 0.0, far / (near - far), -1.0],
-        [0.0, 0.0, near * far / (near - far), 0.0],
-    ]
-}
-
-fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [[f32; 4]; 4] {
-    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let cross = |a: [f32; 3], b: [f32; 3]| {
-        [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ]
-    };
-    let norm = |a: [f32; 3]| {
-        let l = dot(a, a).sqrt();
-        [a[0] / l, a[1] / l, a[2] / l]
-    };
-    let f = norm(sub(target, eye));
-    let s = norm(cross(f, up));
-    let u = cross(s, f);
-    [
-        [s[0], u[0], -f[0], 0.0],
-        [s[1], u[1], -f[1], 0.0],
-        [s[2], u[2], -f[2], 0.0],
-        [-dot(s, eye), -dot(u, eye), dot(f, eye), 1.0],
-    ]
-}
-
-fn multiply(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
-    let mut out = [[0.0; 4]; 4];
-    for (c, col) in out.iter_mut().enumerate() {
-        for (r, value) in col.iter_mut().enumerate() {
-            *value = (0..4).map(|k| a[k][r] * b[c][k]).sum();
-        }
-    }
-    out
-}
-
 struct Galaxies {
     n: usize,
     sim: NBody,
-    pipeline: wgpu::RenderPipeline,
-    view: wgpu::Buffer,
-    layout: wgpu::BindGroupLayout,
+    particles: Particles,
+    overlay: Overlay,
     group: wgpu::BindGroup,
-    yaw: f32,
-    pitch: f32,
-    distance: f32,
+    camera: Camera,
+    /// Camera keyframes in video seconds, used when recording
+    path: Option<CameraPath>,
     spin: f32,
     steps_per_frame: u32,
     measure_every: u64,
@@ -206,32 +148,6 @@ struct Galaxies {
 }
 
 impl Galaxies {
-    fn bind(
-        gpu: &Gpu,
-        layout: &wgpu::BindGroupLayout,
-        view: &wgpu::Buffer,
-        sim: &NBody,
-    ) -> wgpu::BindGroup {
-        gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stars"),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: view.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: sim.positions().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: sim.velocities().as_entire_binding(),
-                },
-            ],
-        })
-    }
-
     fn restart(&mut self, gpu: &Gpu) {
         self.sim = NBody::new(
             &gpu.device,
@@ -240,10 +156,65 @@ impl Galaxies {
             GRAVITY,
             self.sim.dt(),
         );
-        self.group = Self::bind(gpu, &self.layout, &self.view, &self.sim);
+        self.group = self.particles.bind(
+            &gpu.device,
+            self.sim.positions().as_entire_binding(),
+            self.sim.velocities().as_entire_binding(),
+        );
         self.first = None;
         self.latest = None;
         self.frames = 0;
+    }
+
+    /// Default camera for recordings: a slow push-in through the encounter,
+    /// then pulling back to show the tails
+    fn recording_path(start: Camera) -> CameraPath {
+        CameraPath::new()
+            .key(0.0, start)
+            .key(
+                18.0,
+                Camera {
+                    yaw: start.yaw + 0.5,
+                    pitch: 1.05,
+                    distance: 10.0,
+                    ..start
+                },
+            )
+            .key(
+                40.0,
+                Camera {
+                    yaw: start.yaw + 1.1,
+                    pitch: 0.75,
+                    distance: 15.0,
+                    ..start
+                },
+            )
+            .key(
+                60.0,
+                Camera {
+                    yaw: start.yaw + 1.6,
+                    pitch: 0.6,
+                    distance: 20.0,
+                    ..start
+                },
+            )
+    }
+
+    fn readouts(&self) -> Vec<String> {
+        let mut lines = vec![
+            format!("Galaxy collision: {} bodies, exact gravity", self.n),
+            format!("t = {:.2}   dt = {}", self.sim.time(), self.sim.dt()),
+        ];
+        if let (Some(first), Some(latest)) = (self.first, self.latest) {
+            let drift = (latest.energy() - first.energy()) / first.energy().abs();
+            let p = latest.momentum.iter().map(|x| x * x).sum::<f64>().sqrt();
+            lines.push(format!(
+                "Energy drift {drift:+.2e} (t = {:.1})",
+                latest.time
+            ));
+            lines.push(format!("Momentum {p:.1e}"));
+        }
+        lines
     }
 }
 
@@ -253,84 +224,27 @@ impl Scene for Galaxies {
         let steps_per_frame = arg("steps", 8u32).clamp(1, 64);
         let dt = arg("dt", DT);
         let sim = NBody::new(&gpu.device, &gpu.queue, &encounter(n), GRAVITY, dt);
-        let device = &gpu.device;
-
-        let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
-        let storage = wgpu::BufferBindingType::Storage { read_only: true };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stars"),
-            entries: &[
-                entry(0, wgpu::BufferBindingType::Uniform),
-                entry(1, storage),
-                entry(2, storage),
-            ],
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stars"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let module = device.create_shader_module(wgpu::include_wgsl!("stars.wgsl"));
-        let additive = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::One,
-            dst_factor: wgpu::BlendFactor::One,
-            operation: wgpu::BlendOperation::Add,
-        };
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stars"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: gpu.surface_format(),
-                    blend: Some(wgpu::BlendState {
-                        color: additive,
-                        alpha: additive,
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-        let view = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("view"),
-            size: size_of::<View>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let group = Self::bind(gpu, &layout, &view, &sim);
-
-        Self {
-            n,
-            sim,
-            pipeline,
-            view,
-            layout,
-            group,
+        let particles = Particles::new(&gpu.device, gpu.surface_format());
+        let overlay = Overlay::new(&gpu.device, gpu.surface_format());
+        let group = particles.bind(
+            &gpu.device,
+            sim.positions().as_entire_binding(),
+            sim.velocities().as_entire_binding(),
+        );
+        let camera = Camera {
             yaw: arg("yaw", 0.35),
             pitch: arg("pitch", 0.9),
             distance: arg("distance", 14.0),
+            ..Camera::default()
+        };
+        Self {
+            n,
+            sim,
+            particles,
+            overlay,
+            group,
+            camera,
+            path: None,
             spin: arg("spin", 0.0),
             steps_per_frame,
             measure_every: MEASURE_EVERY,
@@ -345,6 +259,9 @@ impl Scene for Galaxies {
     fn update(&mut self, ctx: &mut Context<'_>) {
         if self.frames == 0 && ctx.data.is_recording() {
             self.measure_every = MEASURE_EVERY_RECORDING;
+            if arg("path", 1u32) != 0 {
+                self.path = Some(Self::recording_path(self.camera));
+            }
             let data = &mut *ctx.data;
             data.meta("bodies", self.n);
             data.meta("dt", self.sim.dt());
@@ -369,11 +286,13 @@ impl Scene for Galaxies {
         if input.pressed(KeyCode::BracketLeft) {
             self.steps_per_frame = (self.steps_per_frame / 2).max(1);
         }
-        let [dx, dy] = input.drag();
-        self.yaw -= dx * 2.5;
-        self.pitch = (self.pitch + dy * 2.5).clamp(0.05, 3.09);
-        self.distance = (self.distance * (1.0 - input.scroll() * 0.1)).clamp(2.0, 80.0);
-        self.yaw += self.spin * ctx.time.dt;
+        match &self.path {
+            Some(path) => self.camera = path.at(ctx.time.elapsed as f32),
+            None => {
+                self.camera.orbit(input.drag(), input.scroll());
+                self.camera.yaw += self.spin * ctx.time.dt;
+            }
+        }
 
         // Measurements recorded last frame can start reading back now
         self.sim.after_submit();
@@ -383,33 +302,6 @@ impl Scene for Galaxies {
             log_measurement(ctx.data, &m, &first);
         }
 
-        let aspect = ctx.gpu.aspect();
-        let (sp, cp) = self.pitch.sin_cos();
-        let (sy, cy) = self.yaw.sin_cos();
-        let eye = [
-            self.distance * sp * sy,
-            -self.distance * sp * cy,
-            self.distance * cp,
-        ];
-        let view_proj = multiply(
-            perspective(0.8, aspect, 0.05, 500.0),
-            look_at(eye, [0.0; 3], [0.0, 0.0, 1.0]),
-        );
-        let config = &ctx.gpu.config;
-        let view = View {
-            view_proj,
-            viewport: [config.width as f32, config.height as f32],
-            size: (config.height as f32 / 900.0 * 2.2).max(1.5),
-            half: (self.n / 2) as u32,
-            intensity: (6000.0 / self.n as f32).sqrt().clamp(0.12, 1.0),
-            heavy_mass: 0.5,
-            _pad: [0.0; 2],
-        };
-        ctx.gpu
-            .queue
-            .write_buffer(&self.view, 0, bytemuck::bytes_of(&view));
-
-        // Readouts
         let (elapsed, steps) = &mut self.steps_window;
         *elapsed += ctx.time.dt as f64;
         if *elapsed >= 1.0 {
@@ -418,35 +310,19 @@ impl Scene for Galaxies {
             *elapsed = 0.0;
             *steps = self.sim.steps();
         }
-        ctx.stats.set("Bodies", format!("{}", self.n));
-        ctx.stats.set(
-            "Simulation time",
-            format!(
-                "{:.2} (dt {}, {} steps/frame)",
-                self.sim.time(),
-                self.sim.dt(),
-                self.steps_per_frame
-            ),
-        );
-        if let (Some(first), Some(latest)) = (self.first, self.latest) {
-            let drift = (latest.energy() - first.energy()) / first.energy().abs();
-            ctx.stats.set("Energy", format!("{:.9}", latest.energy()));
-            ctx.stats.set(
-                "Energy drift",
-                format!("{drift:+.2e}  (at t = {:.1})", latest.time),
-            );
-            let p = latest.momentum.iter().map(|x| x * x).sum::<f64>().sqrt();
-            ctx.stats.set("Total momentum", format!("{p:.1e}"));
+        for line in self.readouts() {
+            if let Some((label, value)) = line.split_once(": ") {
+                ctx.stats.set(label, value);
+            } else {
+                ctx.stats.set("Run", line);
+            }
         }
         ctx.stats.set("Controls", "drag · scroll · Space · R · [ ]");
-        if self.paused {
-            ctx.stats.set("State", "paused");
-        } else {
-            ctx.stats.set("State", "running");
-        }
+        ctx.stats
+            .set("State", if self.paused { "paused" } else { "running" });
     }
 
-    fn render(&mut self, _ctx: &mut Context<'_>, frame: Frame<'_>) {
+    fn render(&mut self, ctx: &mut Context<'_>, frame: Frame<'_>) {
         if !self.paused {
             self.sim.step(
                 frame.encoder,
@@ -459,30 +335,40 @@ impl Scene for Galaxies {
         }
         self.frames += 1;
 
-        let mut pass = frame
-            .encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stars"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: frame.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.004,
-                            g: 0.005,
-                            b: 0.012,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                timestamp_writes: frame.timer.and_then(|t| t.render("draw")),
-                ..Default::default()
-            });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.group, &[]);
-        pass.draw(0..6, 0..self.n as u32);
+        let gpu = ctx.gpu;
+        let size = (gpu.config.width, gpu.config.height);
+        let style = Style::Glow {
+            radius_px: (size.1 as f32 / 900.0 * 2.2).max(1.5),
+            intensity: (6000.0 / self.n as f32).sqrt().clamp(0.12, 1.0),
+            heavy: 0.5,
+        };
+        let coloring = Coloring::Groups {
+            split: (self.n / 2) as u32,
+            a: [0.42, 0.62, 1.0],
+            b: [1.0, 0.62, 0.32],
+        };
+        self.particles.draw(
+            &gpu.device,
+            &gpu.queue,
+            frame.encoder,
+            frame.view,
+            size,
+            &self.camera,
+            &self.group,
+            self.n as u32,
+            style,
+            coloring,
+            [0.004, 0.005, 0.012],
+            frame.timer.and_then(|t| t.render("draw")),
+        );
+        // Readouts in the frame (the browser shows them in the page instead)
+        if !cfg!(target_arch = "wasm32") {
+            let scale = (size.1 as f32 / 540.0).round().max(1.0);
+            self.overlay
+                .lines(16.0 * scale, 16.0 * scale, scale, &self.readouts());
+            self.overlay
+                .draw(&gpu.device, &gpu.queue, frame.encoder, frame.view, size);
+        }
     }
 
     fn finish(&mut self, ctx: &mut Context<'_>) {

@@ -9,7 +9,7 @@ publish = false
 [dependencies]
 virial.workspace = true
 virial-particles.workspace = true
-bytemuck.workspace = true
+virial-render.workspace = true
 
 [dev-dependencies]
 virial-gpu.workspace = true

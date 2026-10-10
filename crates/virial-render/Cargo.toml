@@ -1,0 +1,17 @@
+[package]
+name = "virial-render"
+description = "Drawing for Virial: particles as glowing sprites or shaded spheres, colour maps, cameras and text readouts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+wgpu.workspace = true
+bytemuck.workspace = true

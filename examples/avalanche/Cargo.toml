@@ -1,0 +1,12 @@
+[package]
+name = "avalanche"
+description = "A granular avalanche: glass beads released onto a slope, in SI units"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+virial.workspace = true
+virial-particles.workspace = true
+virial-render.workspace = true

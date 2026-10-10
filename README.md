@@ -9,7 +9,7 @@ Named after the virial theorem, which links a system's kinetic and potential
 energy. The same theorem describes galaxies settling into equilibrium and gives
 a gas its pressure.
 
-Status: steps 1–4, 6 and 7 done, of 8 towards 0.1.0. Virial runs scenes in a window or a browser
+Status: steps 1–7 done, of 8 towards 0.1.0. Virial runs scenes in a window or a browser
 canvas through WebGPU (browser) or Metal / Vulkan / DX12 (native), with mouse
 and keyboard input, a stats panel and GPU pass timings.
 
@@ -31,8 +31,11 @@ python3 scripts/serve.py   # then open http://127.0.0.1:5173/examples/attractors
 
 | Example | What it shows |
 |---|---|
-| `triangle` | Step 1: one binary drawing in the browser and natively |
-| `attractors` | Step 2: up to 16M particles pulled towards the mouse; a speed baseline |
+| `galaxies` | Two disk galaxies colliding under exact gravity, with energy readouts |
+| `gas` | A gas reaching equilibrium: speeds relax onto the Maxwell–Boltzmann curve |
+| `avalanche` | 23,000 glass beads pouring down a slope, in SI units |
+| `attractors` | Up to 16M particles pulled towards the mouse; a speed baseline |
+| `triangle` | One binary drawing in the browser and natively |
 
 Browser settings go in the URL (`?n=4000000&work=heavy`), native settings as
 arguments (`n=4000000 work=heavy`).
@@ -136,6 +139,7 @@ the full state, and `run.json` (settings, GPU, version, git commit). Options:
 | `crates/virial-precision` | Fixed-point accumulators and double-float maths for WGSL, tested on the GPU |
 | `crates/virial-particles` | GPU particle dynamics: gravity, velocity Verlet, energy and momentum measurements |
 | `crates/virial-reference` | CPU reference solvers in f64 (and f32 for comparison), used by tests |
+| `crates/virial-render` | Particles (sprites or spheres), colour maps, floors and walls, cameras and paths, text readouts |
 | `examples/` | Example scenes, each with an `index.html` for the browser |
 | `npm/` | The `@virial/engine` npm package (name reserved; browser build to come) |
 | `scripts/build-web.sh` | Builds an example for the browser and reports its gzipped size |
