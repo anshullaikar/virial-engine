@@ -33,7 +33,21 @@
 - Tested against NIST coexistence data and published surface tension (see
   docs/VALIDATION.md).
 
+### Heat conduction (`virial-particles`, `LennardJones`)
+- `set_heat_exchange`: eHEX, moving a fixed energy per step from a cold slab
+  to a hot one, conserving energy and momentum; `heat_flux` gives the flux.
+- `record_heat_current`, `sample_heat_current`, `read_heat_current`: the
+  microscopic heat current as a series, for Green–Kubo.
+- `set_drawn(Drawn::Temperature)`: measurements leave each molecule's local
+  temperature (averaged over its neighbours within the cutoff) in its
+  velocity's w, for drawing.
+- Tested: Fourier's law and Green–Kubo conductivities agree (see
+  docs/VALIDATION.md).
+
 ### Examples
+- `heat`: heat flowing from a hot slab to a cold one through a liquid,
+  coloured by local temperature, settling into a straight profile; the
+  conductivity from its slope goes to run.json.
 - `condensation`: a fluid cooled from above its critical point separates
   into liquid and vapour, coloured by local density, ending in a slab whose
   densities are compared with NIST's.

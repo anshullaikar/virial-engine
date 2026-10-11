@@ -1,0 +1,12 @@
+[package]
+name = "heat"
+description = "Heat flow: a Lennard-Jones liquid between a hot and a cold slab settles into Fourier's straight temperature profile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+virial.workspace = true
+virial-particles.workspace = true
+virial-render.workspace = true

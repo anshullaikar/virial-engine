@@ -73,6 +73,26 @@ handles any number of liquid slabs); interfaces are the slabs within 3σ.
 The force-shifted surface tension at T = 0.7 is 0.3328 ± 0.0050 (no published
 value found to compare with). 220,000 steps take about 3.5 minutes on the M1.
 
+## Heat conduction (`virial-particles`, `LennardJones` heat exchange and heat current)
+
+Lennard-Jones liquid at density 0.8442, shifted-force cutoff 2.5, dt 0.002,
+constant energy. Heat is driven by eHEX (Wirnsberger, Frenkel and Dellago,
+J. Chem. Phys. 143, 124104, 2015): each step a fixed energy moves from a cold
+slab to a hot one by scaling velocities about each slab's centre of mass,
+plus their O(dt³) position correction.
+
+| Test | Checks | Pass criterion | Measured |
+|---|---|---|---|
+| `heat_current_matches_cpu` | Heat current J = Σ eᵢvᵢ + ½ Σ (Fᵢⱼ·vᵢ) rᵢⱼ, 821 molecules, against f64 all pairs | Within 1e-4 of √N × 10 | Within 1e-5 of J (223.1141 vs 223.1163 in x; 382.1249 vs 382.1249 in z) |
+| `heat_exchange_moves_energy_and_keeps_momentum` | 2908 molecules, 199 energy units moved over 40 time units; energy drift fitted over 200 measurements | Drift over the run below 1e-3 of the energy moved; momentum unchanged; hot slab warmer | Drift −4.4e-4 ± 3.1e-4 per time unit (8.9e-5 of the energy moved; without heat exchange +2.6e-4); momentum within 1.3e-4 |
+| `conductivity_from_fourier_law_agrees_with_green_kubo` | Fourier's law (10 × 10 × 40 box, 3377 molecules, flux 0.1, gradient fitted 4σ clear of the slabs) against Green–Kubo (16³ box, 3458 molecules, current every 2 steps, integrated to t = 6); 8 blocks each | Within 3 combined standard errors; bow within 3 standard errors + 0.02 of zero | Fourier's law 8.56 ± 0.66 (mean T 1.312); Green–Kubo 7.65 ± 0.53 (T 1.285); 1.1 combined standard errors apart. Profile bow (middle third of each linear region against the line through the outer thirds) −0.092 ± 0.061 of the drop across the region: 1.5 standard errors from straight, so curvature below about 10% isn't resolved |
+
+The correction's own effect hasn't been measured separately here (the
+paper's Fig. 2 shows plain HEX drifting as dt²). Truncation at 2.5σ doesn't change thermal conductivity
+significantly (Lautenschlaeger and Hasse, Fluid Phase Equilib. 482, 38,
+2019). For scale, liquid argon near its triple point conducts 0.13 W/m K,
+λ* ≈ 6.9.
+
 ## Granular materials (`virial-particles`, `Granular`, SI units)
 
 | Test | Checks | Pass criterion | Measured |
@@ -127,4 +147,5 @@ value found to compare with). 220,000 steps take about 3.5 minutes on the M1.
 | Gas reaching equilibrium, 32,768 molecules | 40 s (t = 0–38) | 4.5 min | Temperature 2.000 → 2.278 as potential energy converts; worst drift 1.3e-5 |
 | Granular avalanche, 23,460 beads | 30 s (1.8 s real) | 3.3 min | 8.02 J dissipated; at rest, support 38.011 N vs weight 38.025 N (0.04% low, kinetic 6e-4 J) |
 | Condensation, 20,250 molecules | 60 s (t = 0–450) | 4.6 min | Cooled from T = 1.0 to 0.7 (target updated every frame), the fluid separates into a network, two slabs, then one slab straddling the periodic boundary; 92.6% condensed (6+ neighbours within 1.5σ). Final slab, averaged over t = 350–450 (200 samples, one window): liquid 0.72701 (NIST 0.72931), vapour 0.01816 (0.01951), normal pressure 0.01101 (0.01190): 2.1, 1.1 and 2.4 standard deviations of a single 100-unit block of the coexistence test. The slab may have formed after t = 350, so this is a consistency check, not a measurement; the coexistence test is the measurement |
+| Heat flow, 20,261 molecules | 40 s (t = 0–100) | 2.3 min | eHEX moves heat from a cold slab at the bottom (joined to the top by periodicity) to a hot one in the middle, flux 0.15; molecules coloured by local temperature. Energy drift after the lattice melts (t ≥ 5) at most 6.3e-6. Steady profile averaged over t = 60–100 (243 samples, one window): gradient 0.0154, conductivity 9.74 at mean T 1.083; the scatter between the conductivity test's blocks (about 1.3 for a 40-unit window) puts it 0.9σ from the test's Fourier's-law value and 1.6σ from Green–Kubo, at a lower temperature |
 | Double slit, 1024² grid | 19 s (t = 0–11.4) | 1.1 min | 13.2% of the probability reaches the screen; dark fringes where the path difference predicts. Also saves the screen curve and the final wavefunction as `.npy` |

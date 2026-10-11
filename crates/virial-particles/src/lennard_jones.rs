@@ -285,6 +285,7 @@ struct Params {
     box_size: [f32; 4],
     cell_size: [f32; 4],
     cells: [u32; 4],
+    hex_slabs: [f32; 4],
     count: u32,
     total_cells: u32,
     thermostat: u32,
@@ -307,13 +308,15 @@ struct Params {
     profile_bins: u32,
     bin_width: f32,
     near_count: u32,
-    _pad: [u32; 2],
+    hex_energy: f32,
+    drawn: u32,
 }
 
 const WORKGROUP: u32 = 256;
 const SLOTS: u64 = 8;
-/// Words in the accumulator buffer: 8 two-word slots, then list control words
-const CONTROL_WORDS: u64 = 28;
+/// Words in the accumulator buffer: 8 two-word slots, then list control,
+/// Nose-Hoover and heat exchange words (see lennard_jones.wgsl)
+const CONTROL_WORDS: u64 = 84;
 const RING: usize = 3;
 /// Fixed-point slots per slab in the profile buffer (see lennard_jones.wgsl)
 const PROFILE_SLOTS: usize = 8;
@@ -353,6 +356,45 @@ pub struct LennardJones {
     energy_scale: f64,
     momentum_scale: f64,
     profile: Option<ProfileSums>,
+    module: wgpu::ShaderModule,
+    neighbors: wgpu::Buffer,
+    heat_exchange: Option<HeatExchange>,
+    heat_current: Option<Series>,
+}
+
+/// A per-molecule value that measurements leave in each velocity's w.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drawn {
+    /// Neighbours within 1.5 sigma, a local density (the default)
+    Neighbours = 0,
+    /// m v^2 / 3 averaged over the molecule and its neighbours within the
+    /// cutoff: a local kinetic temperature (k_B = 1)
+    Temperature = 1,
+}
+
+/// Heat exchange (Ikeshoji and Hafskjold): every step, `energy` moves from
+/// the slab of the box between heights `cold.0` and `cold.1` to the slab
+/// between `hot.0` and `hot.1`, by scaling velocities about each slab's
+/// centre of mass. Momentum is unchanged. With the box periodic, heat flows
+/// out of the hot slab both ways, so the flux through the fluid is
+/// energy / (2 A dt) for cross-section A.
+#[derive(Clone, Copy, Debug)]
+pub struct HeatExchange {
+    pub hot: (f64, f64),
+    pub cold: (f64, f64),
+    /// Energy moved per step
+    pub energy: f64,
+}
+
+/// A recorded series of heat currents, for Green-Kubo
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+struct Series {
+    capacity: u32,
+    buffer: wgpu::Buffer,
+    group: wgpu::BindGroup,
+    sample: wgpu::ComputePipeline,
+    advance: wgpu::ComputePipeline,
+    samples: u32,
 }
 
 /// Running sums for [`LennardJones::sample_profile`]
@@ -385,6 +427,9 @@ struct Pipelines {
     prime: wgpu::ComputePipeline,
     force_kick: wgpu::ComputePipeline,
     measure: wgpu::ComputePipeline,
+    hex_sum: wgpu::ComputePipeline,
+    hex_update: wgpu::ComputePipeline,
+    hex_apply: wgpu::ComputePipeline,
 }
 
 fn scale_for(magnitude: f64) -> f64 {
@@ -487,6 +532,7 @@ impl LennardJones {
             box_size: [box_size[0], box_size[1], box_size[2], 0.0].map(|x| x as f32),
             cell_size: [cell_size[0], cell_size[1], cell_size[2], 0.0].map(|x| x as f32),
             cells: [cells[0], cells[1], cells[2], 0],
+            hex_slabs: [0.0; 4],
             count,
             total_cells,
             thermostat,
@@ -509,7 +555,8 @@ impl LennardJones {
             profile_bins,
             bin_width: (box_size[2] / profile_bins.max(1) as f64) as f32,
             near_count: 4,
-            _pad: [0; 2],
+            hex_energy: 0.0,
+            drawn: 0,
         };
 
         let usage = wgpu::BufferUsages::STORAGE
@@ -690,38 +737,10 @@ impl LennardJones {
             prime: pipeline("prime"),
             force_kick: pipeline("force_kick"),
             measure: pipeline("measure"),
+            hex_sum: pipeline("hex_sum"),
+            hex_update: pipeline("hex_update"),
+            hex_apply: pipeline("hex_apply"),
         };
-        // Profiles: the profile buffer takes the accumulators' binding, so the
-        // shader's fixed-point helpers add into it
-        let profile = (profile_bins > 0).then(|| {
-            let words = 2 * (profile_bins as u64 * PROFILE_SLOTS as u64 + 3);
-            let buffer = zeroed("lj profile sums", words * 4);
-            let (group, layout) = make_group(
-                "lennard-jones profile",
-                &[0, 1, 2, 6],
-                &[
-                    (0, &params_buffer),
-                    (1, &state),
-                    (2, &buffer),
-                    (6, &neighbors),
-                ],
-            );
-            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("profile"),
-                layout: Some(&layout),
-                module: &module,
-                entry_point: Some("profile"),
-                compilation_options: Default::default(),
-                cache: None,
-            });
-            ProfileSums {
-                bins: profile_bins,
-                buffer,
-                group,
-                pipeline,
-                samples: 0,
-            }
-        });
         let readback = (0..RING)
             .map(|_| Readback {
                 buffer: device.create_buffer(&wgpu::BufferDescriptor {
@@ -737,7 +756,7 @@ impl LennardJones {
             })
             .collect();
 
-        Self {
+        let mut sim = Self {
             device: device.clone(),
             queue: queue.clone(),
             count,
@@ -760,8 +779,92 @@ impl LennardJones {
             params_buffer,
             energy_scale,
             momentum_scale,
-            profile,
+            profile: None,
+            module,
+            neighbors,
+            heat_exchange: None,
+            heat_current: None,
+        };
+        if profile_bins > 0 {
+            let words = 2 * (profile_bins as u64 * PROFILE_SLOTS as u64 + 3);
+            let buffer = zeroed("lj profile sums", words * 4);
+            let (group, pipeline) = sim.with_accumulators("profile", &buffer);
+            sim.profile = Some(ProfileSums {
+                bins: profile_bins,
+                buffer,
+                group,
+                pipeline,
+                samples: 0,
+            });
         }
+        sim
+    }
+
+    /// A pipeline for `entry` with `buffer` bound in place of the
+    /// accumulators, so the shader's fixed-point helpers add into it
+    fn with_accumulators(
+        &self,
+        entry: &str,
+        buffer: &wgpu::Buffer,
+    ) -> (wgpu::BindGroup, wgpu::ComputePipeline) {
+        let bound = [
+            (0, &self.params_buffer),
+            (1, &self.state),
+            (2, buffer),
+            (6, &self.neighbors),
+        ];
+        let entries: Vec<_> = bound
+            .iter()
+            .map(|&(binding, _)| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: if binding == 0 {
+                        wgpu::BufferBindingType::Uniform
+                    } else {
+                        wgpu::BufferBindingType::Storage { read_only: false }
+                    },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            })
+            .collect();
+        let layout = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some(entry),
+                entries: &entries,
+            });
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(entry),
+            layout: &layout,
+            entries: &bound
+                .iter()
+                .map(|&(binding, buffer)| wgpu::BindGroupEntry {
+                    binding,
+                    resource: buffer.as_entire_binding(),
+                })
+                .collect::<Vec<_>>(),
+        });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(entry),
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&pipeline_layout),
+                module: &self.module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        (group, pipeline)
     }
 
     pub fn count(&self) -> u32 {
@@ -775,6 +878,14 @@ impl LennardJones {
             Thermostat::Langevin(t) => Some(t.temperature),
             Thermostat::NoseHoover(t) => Some(t.temperature),
         }
+    }
+
+    /// What each measurement leaves in the w of every velocity (see
+    /// [`LennardJones::velocities`]), for drawing.
+    pub fn set_drawn(&mut self, drawn: Drawn) {
+        self.params.drawn = drawn as u32;
+        self.queue
+            .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
     }
 
     /// Neighbours within 1.5 sigma that make a molecule count as condensed in
@@ -813,6 +924,93 @@ impl LennardJones {
             .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
     }
 
+    /// Starts (or with None stops) moving heat from a cold slab to a hot one
+    /// every step. Needs constant energy: panics with a thermostat.
+    pub fn set_heat_exchange(&mut self, exchange: Option<HeatExchange>) {
+        assert!(
+            matches!(self.thermostat, Thermostat::None),
+            "heat exchange runs at constant energy, without a thermostat"
+        );
+        let (slabs, energy) = match exchange {
+            Some(h) => ([h.hot.0, h.hot.1, h.cold.0, h.cold.1], h.energy),
+            None => ([0.0; 4], 0.0),
+        };
+        self.params.hex_slabs = slabs.map(|z| z as f32);
+        self.params.hex_energy = energy as f32;
+        self.heat_exchange = exchange;
+        self.queue
+            .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
+    }
+
+    /// Heat flux through the fluid driven by the heat exchange, energy per
+    /// unit area and time: the energy moved each step (as the GPU applies
+    /// it, rounded to f32) over 2 A dt.
+    pub fn heat_flux(&self) -> Option<f64> {
+        let [lx, ly, _] = self.box_size;
+        self.heat_exchange
+            .map(|_| self.params.hex_energy as f64 / (2.0 * lx * ly * self.dt))
+    }
+
+    /// Makes room to record `capacity` samples of the heat current (see
+    /// [`LennardJones::sample_heat_current`]), discarding any recorded.
+    pub fn record_heat_current(&mut self, capacity: u32) {
+        let words = 2 * (1 + 3 * capacity as u64);
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("heat current series"),
+            size: words * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let (group, sample) = self.with_accumulators("heat_current", &buffer);
+        let (_, advance) = self.with_accumulators("heat_current_advance", &buffer);
+        self.heat_current = Some(Series {
+            capacity,
+            buffer,
+            group,
+            sample,
+            advance,
+            samples: 0,
+        });
+    }
+
+    /// Records the heat current J = sum_i e_i v_i + 1/2 sum_ij (F_ij . v_i)
+    /// r_ij now, the next sample in the series. Panics when the series is
+    /// full or wasn't started.
+    pub fn sample_heat_current(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let count = self.count;
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("heat current"),
+            timestamp_writes: None,
+        });
+        pass.set_bind_group(0, &self.group, &[]);
+        self.prime_if_needed(&mut pass);
+        let series = self
+            .heat_current
+            .as_mut()
+            .expect("record_heat_current first");
+        assert!(series.samples < series.capacity, "heat current series full");
+        pass.set_bind_group(0, &series.group, &[]);
+        pass.set_pipeline(&series.sample);
+        pass.dispatch_workgroups(count.div_ceil(WORKGROUP), 1, 1);
+        pass.set_pipeline(&series.advance);
+        pass.dispatch_workgroups(1, 1, 1);
+        series.samples += 1;
+    }
+
+    /// The heat currents recorded so far (x, y, z). Native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn read_heat_current(&self) -> Vec<[f64; 3]> {
+        let series = self
+            .heat_current
+            .as_ref()
+            .expect("record_heat_current first");
+        let words: Vec<u32> = bytemuck::cast_slice(&self.read_buffer(&series.buffer)).to_vec();
+        let values = fixed::decode(&words);
+        (0..series.samples as usize)
+            .map(|k| [0, 1, 2].map(|a| values[1 + 3 * k + a]))
+            .collect()
+    }
+
     /// The box sides actually used: the requested sizes rounded to f32, so
     /// the GPU and any CPU check agree exactly.
     pub fn box_size(&self) -> [f64; 3] {
@@ -846,8 +1044,8 @@ impl LennardJones {
     }
 
     /// `vec4f` per particle, velocity (hi part) in xyz and, after a
-    /// measurement, the number of neighbours within 1.5 sigma in w. For
-    /// drawing.
+    /// measurement, the value chosen with [`LennardJones::set_drawn`] in w.
+    /// For drawing.
     pub fn velocities(&self) -> wgpu::BindingResource<'_> {
         self.section(2)
     }
@@ -925,6 +1123,14 @@ impl LennardJones {
                 pass.set_pipeline(&p.nh_update);
                 pass.dispatch_workgroups(1, 1, 1);
                 pass.set_pipeline(&p.nh_scale);
+                pass.dispatch_workgroups(particles, 1, 1);
+            }
+            if self.heat_exchange.is_some() {
+                pass.set_pipeline(&p.hex_sum);
+                pass.dispatch_workgroups(particles, 1, 1);
+                pass.set_pipeline(&p.hex_update);
+                pass.dispatch_workgroups(1, 1, 1);
+                pass.set_pipeline(&p.hex_apply);
                 pass.dispatch_workgroups(particles, 1, 1);
             }
         }

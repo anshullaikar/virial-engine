@@ -40,6 +40,8 @@ struct Params {
     box_size: vec4f,
     cell_size: vec4f,
     cells: vec4u,
+    // Heat exchange: hot slab from x to y, cold slab from z to w
+    hex_slabs: vec4f,
     count: u32,
     total_cells: u32,
     // 0: constant energy (velocity Verlet), 1: Langevin thermostat (BAOAB),
@@ -74,8 +76,11 @@ struct Params {
     bin_width: f32,
     // Neighbours within 1.5 sigma that make a molecule count as condensed
     near_count: u32,
-    _pad1: u32,
-    _pad2: u32,
+    // Heat exchange: energy moved from the cold slab to the hot one per step
+    hex_energy: f32,
+    // What measurements leave in each velocity's w: 0 neighbours within
+    // 1.5 sigma, 1 local temperature
+    drawn: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -112,6 +117,10 @@ const KE_SLOT: u32 = 10u;
 const XI: u32 = 22u;
 const ETA: u32 = 24u;
 const SCALE: u32 = 26u;
+// Heat exchange: per slab (hot, then cold) HEX_SLOTS_PER_SLAB fixed-point
+// slots from HEX_SLOT, then HEX_WORDS_PER_SLAB words per slab from HEX_WORDS
+const HEX_SLOT: u32 = 14u;
+const HEX_WORDS: u32 = 64u;
 
 // ---- Packed positions ----
 
@@ -399,6 +408,9 @@ struct Pair {
     pe: vec2f,
     w: vec2f,
     near: u32,
+    // Sum of |v_j|^2 over neighbours within the cutoff, and their number
+    v2: f32,
+    within: u32,
 }
 
 // Condensed: at least params.near_count neighbours within 1.5 sigma
@@ -493,7 +505,7 @@ fn interactions(i: u32, energies: bool) -> Pair {
     let xl = state[params.segment + i].xyz;
     let seg = params.segment;
     let count = neighbors[i];
-    var out = Pair(vec3f(0.0), vec2f(0.0), vec2f(0.0), 0u);
+    var out = Pair(vec3f(0.0), vec2f(0.0), vec2f(0.0), 0u, 0.0, 0u);
     for (var k = 0u; k < count; k++) {
         let j = neighbors[seg * (k + 1u) + i];
         let pj = state[6u * params.segment + j];
@@ -506,6 +518,11 @@ fn interactions(i: u32, energies: bool) -> Pair {
                 out.pe = df_add_f(out.pe, 0.5 * p.y);
                 out.w = df_add_f(out.w, 0.5 * p.x);
                 out.near += select(0u, 1u, r2 < NEAR_R2);
+                if params.drawn == 1u {
+                    let vj = state[2u * params.segment + j].xyz;
+                    out.v2 += dot(vj, vj);
+                    out.within += 1u;
+                }
             }
         }
     }
@@ -557,8 +574,9 @@ fn force_kick(@builtin(global_invocation_id) id: vec3u) {
 }
 
 // Slots: 0 kinetic, 1 potential, 2 virial sum, 3-5 momentum, 6 condensed
-// molecules. Also leaves each molecule's neighbour count within 1.5 sigma in
-// its velocity's w, for drawing.
+// molecules. Also leaves each molecule's neighbour count within 1.5 sigma
+// (or its local temperature, by params.drawn) in its velocity's w, for
+// drawing.
 @compute @workgroup_size(256)
 fn measure(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_index) li: u32) {
     df_init(params.one);
@@ -575,7 +593,14 @@ fn measure(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_i
         pe = p.pe;
         w = p.w;
         condensed = select(0.0, 1.0, p.near >= params.near_count);
-        state[2u * params.segment + i].w = f32(p.near);
+        var drawn = f32(p.near);
+        if params.drawn == 1u {
+            // Local temperature: m v^2 / 3 averaged over the molecule and
+            // its neighbours within the cutoff
+            let vi = state[2u * params.segment + i].xyz;
+            drawn = (dot(vi, vi) + p.v2) / (3.0 * f32(p.within + 1u));
+        }
+        state[2u * params.segment + i].w = drawn;
         let vh = state[2u * params.segment + i];
         let vl = state[3u * params.segment + i];
         for (var k = 0u; k < 3u; k++) {
@@ -702,4 +727,221 @@ fn profile(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_i
         let high = atomicLoad(&virial_fixed_wg[2u * li + 1u]);
         fixed_add_parts(params.profile_bins * PROFILE_SLOTS + li, vec2u(low, high));
     }
+}
+
+// ---- Heat exchange (eHEX: Wirnsberger, Frenkel and Dellago 2015) ----
+//
+// After each step, the hot slab gains hex_energy and the cold slab loses it,
+// by scaling velocities about each slab's centre-of-mass velocity
+// (Ikeshoji and Hafskjold): momentum stays put and exactly hex_energy moves.
+// The original scheme drifts in energy through the splitting error; eHEX
+// cancels the leading term with a correction to the positions of order
+// dt^3 (their eq. 20, all energy supplied at the end of the step, "eHEX/a").
+// hex_sum totals each slab, hex_update (one thread) works out the scales
+// and correction coefficients, hex_apply scales and corrects.
+
+const HEX_SLOTS_PER_SLAB: u32 = 9u;
+
+// 0 hot, 1 cold, 2 neither
+fn hex_slab(z: f32) -> u32 {
+    let b = params.hex_slabs;
+    if z >= b.x && z < b.y {
+        return 0u;
+    }
+    if z >= b.z && z < b.w {
+        return 1u;
+    }
+    return 2u;
+}
+
+// Per slab: count, momentum (3), sum of v^2, sum of f . v, sum of f (3)
+@compute @workgroup_size(256)
+fn hex_sum(@builtin(global_invocation_id) id: vec3u) {
+    let i = id.x;
+    if i >= params.count {
+        return;
+    }
+    let seg = params.segment;
+    let slab = hex_slab(state[i].z);
+    if slab == 2u {
+        return;
+    }
+    let v = state[2u * seg + i].xyz + state[3u * seg + i].xyz;
+    let f = state[4u * seg + i].xyz;
+    let first = HEX_SLOT + HEX_SLOTS_PER_SLAB * slab;
+    fixed_add(first, 1.0);
+    for (var k = 0u; k < 3u; k++) {
+        fixed_add(first + 1u + k, v[k] * params.momentum_scale);
+        fixed_add(first + 6u + k, f[k] * params.momentum_scale);
+    }
+    fixed_add(first + 4u, dot(v, v) * params.energy_scale);
+    fixed_add(first + 5u, dot(f, v) * params.energy_scale);
+}
+
+// A fixed-point slot as a double-float, then cleared
+fn take_fixed(slot: u32) -> vec2f {
+    let low = atomicLoad(&virial_fixed[2u * slot]);
+    let high = atomicLoad(&virial_fixed[2u * slot + 1u]);
+    atomicStore(&virial_fixed[2u * slot], 0u);
+    atomicStore(&virial_fixed[2u * slot + 1u], 0u);
+    // The low word goes in as two 16-bit halves so no bits are lost
+    let x = df_add_f(df_from(f32(bitcast<i32>(high))), f32(low >> 16u) / 65536.0);
+    return df_add_f(x, f32(low & 0xffffu) / 4294967296.0);
+}
+
+// Words per slab from HEX_WORDS: centre-of-mass velocity (3), velocity scale
+// minus one, the two correction coefficients, mean force (3)
+const HEX_WORDS_PER_SLAB: u32 = 9u;
+
+fn store_word(w: u32, x: f32) {
+    atomicStore(&virial_fixed[w], bitcast<u32>(x));
+}
+
+fn load_word(w: u32) -> f32 {
+    return bitcast<f32>(atomicLoad(&virial_fixed[w]));
+}
+
+@compute @workgroup_size(1)
+fn hex_update() {
+    df_init(params.one);
+    let dt3 = params.dt * params.dt * params.dt;
+    for (var slab = 0u; slab < 2u; slab++) {
+        let first = HEX_SLOT + HEX_SLOTS_PER_SLAB * slab;
+        let m = df_to_f32(take_fixed(first));
+        var p = vec3f(0.0);
+        var f = vec3f(0.0);
+        for (var k = 0u; k < 3u; k++) {
+            p[k] = df_to_f32(take_fixed(first + 1u + k)) / params.momentum_scale;
+            f[k] = df_to_f32(take_fixed(first + 6u + k)) / params.momentum_scale;
+        }
+        let v2 = df_mul_f(take_fixed(first + 4u), 1.0 / params.energy_scale);
+        let fv = df_to_f32(take_fixed(first + 5u)) / params.energy_scale;
+        var com = vec3f(0.0);
+        var s_minus_1 = 0.0;
+        var c_velocity = 0.0;
+        var c_force = 0.0;
+        var mean_force = vec3f(0.0);
+        if m > 0.0 {
+            com = p / m;
+            mean_force = f / m;
+            // Kinetic energy about the centre of mass, K
+            let kinetic = df_to_f32(df_add_f(df_mul_f(v2, 0.5), -0.5 * dot(p, p) / m));
+            // Energy into this slab per step and per unit time (F)
+            let energy = select(-1.0, 1.0, slab == 0u) * params.hex_energy;
+            let flux = energy / params.dt;
+            let x = energy / kinetic;
+            // sqrt(1 + x) - 1, accurate when x is small
+            s_minus_1 = x / (1.0 + sqrt(1.0 + x));
+            // eq. 20 with eta_i = F / (2K) (v_i - v_com):
+            // E_i = eta_i / K [F / 48 + 1/6 sum_j f_j . (v_j - v_com)]
+            //       - F / (12 K) (f_i - mean f)
+            let power = fv - dot(f, com);
+            c_velocity = dt3 * flux / (2.0 * kinetic * kinetic) * (flux / 48.0 + power / 6.0);
+            c_force = dt3 * flux / (12.0 * kinetic);
+        }
+        let w = HEX_WORDS + HEX_WORDS_PER_SLAB * slab;
+        for (var k = 0u; k < 3u; k++) {
+            store_word(w + k, com[k]);
+            store_word(w + 6u + k, mean_force[k]);
+        }
+        store_word(w + 3u, s_minus_1);
+        store_word(w + 4u, c_velocity);
+        store_word(w + 5u, c_force);
+    }
+}
+
+@compute @workgroup_size(256)
+fn hex_apply(@builtin(global_invocation_id) id: vec3u) {
+    df_init(params.one);
+    let i = id.x;
+    if i >= params.count {
+        return;
+    }
+    let seg = params.segment;
+    var ph = state[i];
+    var pl = state[seg + i];
+    let slab = hex_slab(ph.z);
+    if slab == 2u {
+        return;
+    }
+    let w = HEX_WORDS + HEX_WORDS_PER_SLAB * slab;
+    let s_minus_1 = load_word(w + 3u);
+    let c_velocity = load_word(w + 4u);
+    let c_force = load_word(w + 5u);
+    let f = state[4u * seg + i].xyz;
+    var vh = state[2u * seg + i];
+    var vl = state[3u * seg + i];
+    for (var k = 0u; k < 3u; k++) {
+        let com = load_word(w + k);
+        let v = vec2f(vh[k], vl[k]);
+        let relative = df_add_f(v, -com);
+        // Position correction -dt^3 E_i, from the velocity before scaling
+        let shift = c_velocity * df_to_f32(relative) - c_force * (f[k] - load_word(w + 6u + k));
+        let x = wrap(df_add_f(vec2f(ph[k], pl[k]), -shift), params.box_size[k]);
+        ph[k] = x.x;
+        pl[k] = x.y;
+        // v + (s - 1)(v - com)
+        let out = df_add(v, df_mul_f(relative, s_minus_1));
+        vh[k] = out.x;
+        vl[k] = out.y;
+    }
+    state[2u * seg + i] = vh;
+    state[3u * seg + i] = vl;
+    state[i] = ph;
+    state[seg + i] = pl;
+    store_packed(i, ph.xyz, pl.xyz);
+}
+
+// ---- Heat current, for Green-Kubo ----
+//
+// J = sum_i e_i v_i + 1/2 sum_i sum_j (F_ij . v_i) r_ij, with e_i the
+// particle's kinetic energy plus half of each of its pair energies. Bound
+// with a series buffer in place of virial_fixed: slot 0 counts samples, and
+// sample k goes to slots 1 + 3k (x, y, z). heat_current adds one sample,
+// heat_current_advance moves the count on.
+
+@compute @workgroup_size(256)
+fn heat_current(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_index) li: u32) {
+    df_init(params.one);
+    fixed_wg_clear(li);
+    workgroupBarrier();
+    let i = id.x;
+    var j_i = vec3f(0.0);
+    if i < params.count {
+        let seg = params.segment;
+        let xh = state[i].xyz;
+        let xl = state[seg + i].xyz;
+        let v = state[2u * seg + i].xyz + state[3u * seg + i].xyz;
+        var e = 0.5 * dot(v, v);
+        var pairs = vec3f(0.0);
+        let count = neighbors[i];
+        for (var k = 0u; k < count; k++) {
+            let j = neighbors[seg * (k + 1u) + i];
+            let pj = state[6u * seg + j];
+            let d = nearest((pj.xyz - xh) + (unpack_lo(pj.xyz, pj.w) - xl));
+            let r2 = dot(d, d);
+            if r2 < params.rc2 {
+                let p = pair(r2);
+                e += 0.5 * p.y;
+                // r_ij (F_ij . v_i) with r_ij = -d and F_ij = -d rf / r^2
+                pairs += d * (dot(d, v) * p.x / r2);
+            }
+        }
+        j_i = e * v + 0.5 * pairs;
+    }
+    for (var k = 0u; k < 3u; k++) {
+        fixed_wg_add(k, j_i[k]);
+    }
+    workgroupBarrier();
+    if li < 3u {
+        let sample = atomicLoad(&virial_fixed[0]);
+        let low = atomicLoad(&virial_fixed_wg[2u * li]);
+        let high = atomicLoad(&virial_fixed_wg[2u * li + 1u]);
+        fixed_add_parts(1u + 3u * sample + li, vec2u(low, high));
+    }
+}
+
+@compute @workgroup_size(1)
+fn heat_current_advance() {
+    atomicAdd(&virial_fixed[0], 1u);
 }
