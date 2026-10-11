@@ -108,7 +108,8 @@ more steps per second; wasm at most 3 MB gzipped.
 | Condensation video (`condensation`): cooling schedule, molecules coloured by neighbour count, condensed fraction | Done, unreleased. 60 s at 1080p60, rendered in 4.6 min; the final slab's densities are within 2.4 block standard deviations of NIST's |
 | Heat conduction (`set_heat_exchange` with eHEX, heat current for Green–Kubo, `heat` example) | Done, unreleased. Fourier's law 8.56 ± 0.66 and Green–Kubo 7.65 ± 0.53 agree within 1.1 combined standard errors (density 0.8442, T about 1.3); energy bookkeeping closes to 9e-5 of the heat moved |
 | Faster quantum FFT and energy spectra (`Fft::Rows`, `record_autocorrelation`, `energy_levels`) | Done, unreleased. 1024² step 15.4 → 4.5 ms, bit-identical; harmonic levels at ω(n + 1) to 5e-6 with Poisson weights to 8e-5 |
-| Browser video export (WebCodecs) | Next |
+| Browser video export (`?record=1`: WebCodecs VP9 into a WebM written in Rust) | Done, unreleased. Browser reruns are bit-identical; browser and native agree to 6e-13 at the start and diverge chaotically after (different shader compilers); 1080p60 plays and seeks in Chrome |
+| Safari (tested by hand), then release 0.2.0 | Next |
 
 ## Known gaps
 
@@ -145,6 +146,13 @@ more steps per second; wasm at most 3 MB gzipped.
   each, about 3.5 minutes alone and 10.7 minutes for the two side by side.
   `scripts/check.sh` now takes about 18 minutes on an M1 Air.
 - **Safari** is untested.
+- **Browser and native runs aren't bit-identical**: Chrome compiles WGSL
+  with Tint, native with naga, and Metal results differ in the last bit
+  (divisions, for one). Each is reproducible on its own; in a chaotic
+  system the two drift apart (1e-8 relative kinetic energy after about
+  900 gas steps). Native `check.sh` also can't catch WGSL that only the
+  browser rejects (a `fwidth` in non-uniform control flow did that to every
+  particle example until 2026-10-11): check the pages in Chrome.
 - **The quantum FFT is bandwidth-bound**: transforming whole rows in
   workgroup memory (4 sweeps of the grid per step instead of 40) brought a
   1024² step from 15.4 to 4.5 ms on an M1 Air (512²: 2.3 to 1.2 ms), bit for

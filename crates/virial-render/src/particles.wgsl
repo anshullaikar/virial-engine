@@ -156,10 +156,12 @@ fn fs_plane(in: PlaneOut) -> @location(0) vec4f {
     let plane = planes[in.index];
     var color = plane.color.rgb;
     let spacing = plane.grid.x;
+    // Grid in the plane's own coordinates, a pixel wide at any distance.
+    // fwidth only in uniform control flow: WebGPU rejects it inside a branch
+    // on a per-plane value (native compilers don't check)
+    let g = in.along / select(1.0, spacing, spacing > 0.0);
+    let width = fwidth(g);
     if spacing > 0.0 {
-        // Grid in the plane's own coordinates, a pixel wide at any distance
-        let g = in.along / spacing;
-        let width = fwidth(g);
         let line = step(fract(g), width) + step(1.0 - width, fract(g));
         let on = clamp(max(line.x, line.y), 0.0, 1.0);
         color = mix(color, color * 1.5 + 0.006, on);

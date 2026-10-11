@@ -14,7 +14,8 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Instant;
 
-use crate::data::{DataLog, json_string};
+use crate::data::DataLog;
+use crate::manifest::{Manifest, fnv1a};
 use crate::{Context, Frame, Gpu, Input, Scene, Stats, Time, arg, args, wgpu};
 
 /// What to record.
@@ -55,15 +56,6 @@ pub struct Recording {
     /// FNV-1a hash of each frame's RGBA pixels
     pub frame_hashes: Vec<u64>,
     pub seconds: f64,
-}
-
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    h
 }
 
 fn git_commit() -> Option<String> {
@@ -278,40 +270,19 @@ pub fn record<S: Scene>(title: &str, settings: &RecordSettings) -> Recording {
     write("measurements.csv", data.csv());
 
     let seconds = started.elapsed().as_secs_f64();
-    let mut settings_json: Vec<(String, String)> = args().into_iter().collect();
-    settings_json.sort();
-    let mut json = String::from("{\n");
-    let mut field = |k: &str, v: String| json += &format!("  {}: {v},\n", json_string(k));
-    field("scene", json_string(title));
-    field("virial_version", json_string(env!("CARGO_PKG_VERSION")));
-    field(
-        "git_commit",
-        commit.map_or("null".into(), |c| json_string(&c)),
-    );
-    field(
-        "git_uncommitted_changes",
-        dirty.map_or("null".into(), |d| d.to_string()),
-    );
-    field(
-        "gpu",
-        json_string(&format!("{} ({:?})", info.name, info.backend)),
-    );
-    field("width", settings.width.to_string());
-    field("height", settings.height.to_string());
-    field("fps", settings.fps.to_string());
-    field("frames", settings.frames.to_string());
-    field("render_seconds", format!("{seconds:.3}"));
-    let pairs: Vec<String> = settings_json
-        .iter()
-        .map(|(k, v)| format!("{}: {}", json_string(k), json_string(v)))
-        .collect();
-    field("settings", format!("{{{}}}", pairs.join(", ")));
-    let scene_meta: Vec<String> = data
-        .meta_entries()
-        .iter()
-        .map(|(k, v)| format!("{}: {}", json_string(k), json_string(v)))
-        .collect();
-    json += &format!("  \"scene_meta\": {{{}}}\n}}\n", scene_meta.join(", "));
+    let manifest = Manifest {
+        title,
+        commit,
+        uncommitted_changes: dirty,
+        gpu: format!("{} ({:?})", info.name, info.backend),
+        width: settings.width,
+        height: settings.height,
+        fps: settings.fps,
+        frames: settings.frames,
+        seconds,
+        settings: args().into_iter().collect(),
+    };
+    let json = manifest.json(&data);
     write("run.json", json);
 
     log::info!(

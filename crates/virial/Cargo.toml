@@ -26,6 +26,13 @@ env_logger.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-web-sys = { workspace = true, features = ["Document", "Element", "HtmlElement", "Location", "Window"] }
+js-sys.workspace = true
+web-sys = { workspace = true, features = [
+  "Blob", "BlobPropertyBag", "Document", "Element", "EncodedVideoChunk",
+  "EncodedVideoChunkType", "HtmlAnchorElement", "HtmlElement", "LatencyMode",
+  "Location", "Navigator", "Url", "VideoEncoder", "VideoEncoderConfig",
+  "VideoEncoderEncodeOptions", "VideoEncoderInit", "VideoFrame",
+  "VideoFrameBufferInit", "VideoPixelFormat", "Window",
+] }
 console_error_panic_hook.workspace = true
 console_log.workspace = true

@@ -15,6 +15,8 @@ use std::path::PathBuf;
 pub struct DataLog {
     #[cfg(not(target_arch = "wasm32"))]
     dir: Option<PathBuf>,
+    /// Recording (to disk, or in memory for a browser download)
+    recording: bool,
     columns: Vec<String>,
     rows: Vec<Vec<f64>>,
     meta: Vec<(String, String)>,
@@ -25,6 +27,7 @@ impl DataLog {
         Self {
             #[cfg(not(target_arch = "wasm32"))]
             dir: None,
+            recording: false,
             columns: Vec::new(),
             rows: Vec::new(),
             meta: Vec::new(),
@@ -35,16 +38,24 @@ impl DataLog {
     pub(crate) fn recording(dir: PathBuf) -> Self {
         Self {
             dir: Some(dir),
+            recording: true,
+            ..Self::preview()
+        }
+    }
+
+    /// Recording, with everything kept in memory (the browser recorder
+    /// offers it as downloads; snapshots are skipped)
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn recording_in_memory() -> Self {
+        Self {
+            recording: true,
             ..Self::preview()
         }
     }
 
     /// Whether this run is being recorded to disk.
     pub fn is_recording(&self) -> bool {
-        #[cfg(not(target_arch = "wasm32"))]
-        return self.dir.is_some();
-        #[cfg(target_arch = "wasm32")]
-        false
+        self.recording
     }
 
     /// Adds a measurement row. The first row sets the columns; later rows must
@@ -102,7 +113,6 @@ impl DataLog {
         out
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn meta_entries(&self) -> &[(String, String)] {
         &self.meta
     }
@@ -138,7 +148,6 @@ pub fn npy(shape: &[usize], data: &[f64]) -> Vec<u8> {
 }
 
 /// A JSON string literal.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn json_string(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {

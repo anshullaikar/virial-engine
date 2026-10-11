@@ -44,6 +44,20 @@
 - Tested: Fourier's law and Green–Kubo conductivities agree (see
   docs/VALIDATION.md).
 
+### Recording in the browser (`virial`)
+- `?record=1` on any example page renders offline on the fixed video clock,
+  encodes VP9 with WebCodecs and offers `video.webm`, `frames.csv`,
+  `measurements.csv` and `run.json` (with the build's git commit).
+- `virial::webm`: a small WebM writer (clusters per keyframe, cues for
+  seeking), tested against ffmpeg.
+- Recordings stop with the GPU's message if a shader or pipeline is invalid,
+  rather than recording blank frames.
+
+### Fixed
+- Floors and walls (`virial-render`): the grid shader called `fwidth` in
+  non-uniform control flow, which WebGPU rejects, so no particle example drew
+  in Chrome. Native builds accepted it.
+
 ### Quantum (`virial-quantum`)
 - Whole-row FFTs in workgroup memory (`Fft::Rows`, the default up to
   n = 1024): a 1024² step from 15.4 to 4.5 ms on an M1 Air, bit-identical to

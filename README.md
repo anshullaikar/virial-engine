@@ -149,6 +149,14 @@ reruns match exactly), `measurements.csv` (exact values), `.npy` snapshots of
 the full state, and `run.json` (settings, GPU, version, git commit). Options:
 `width`, `height`, `fps`, `seconds`, `video=0` to skip encoding.
 
+In the browser, add `?record=1` to an example's page (with the same options,
+for example `?record=1&seconds=10`). It renders on the same fixed clock,
+encodes VP9 with WebCodecs into `video.webm`, and shows links to download it
+with `frames.csv`, `measurements.csv` and `run.json`. Keep the tab in front:
+browsers throttle background tabs. Two browser recordings are identical frame
+for frame; browser and native runs compile shaders differently, so they agree
+closely but not bit for bit (see docs/VALIDATION.md).
+
 ## Layout
 
 | Path | What it is |

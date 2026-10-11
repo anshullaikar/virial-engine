@@ -6,6 +6,10 @@ set -eu
 name="${1:?usage: scripts/build-web.sh <example>}"
 cd "$(dirname "$0")/.."
 
+# The commit, for run.json when the page records video
+VIRIAL_GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+VIRIAL_GIT_DIRTY=$(test -z "$(git status --porcelain 2>/dev/null)" && echo 0 || echo 1)
+export VIRIAL_GIT_COMMIT VIRIAL_GIT_DIRTY
 cargo build --release --target wasm32-unknown-unknown -p "$name"
 wasm-bindgen --target web --no-typescript \
   --out-dir "examples/$name/pkg" \

@@ -16,9 +16,13 @@ use winit::window::{Window, WindowId};
 mod args;
 pub mod data;
 mod input;
+mod manifest;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod record;
+#[cfg(target_arch = "wasm32")]
+mod record_web;
 mod stats;
+pub mod webm;
 
 pub use args::{arg, args};
 pub use data::DataLog;
@@ -101,6 +105,12 @@ pub fn run<S: Scene>(config: Config) {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(dir) = args().get("record").filter(|d| !d.is_empty()) {
         record::record::<S>(config.title, &record::RecordSettings::from_args(dir));
+        return;
+    }
+    // In the browser, ?record=1 renders offline and offers the files
+    #[cfg(target_arch = "wasm32")]
+    if args().get("record").is_some_and(|r| r != "0") {
+        record_web::start::<S>(config.title);
         return;
     }
 

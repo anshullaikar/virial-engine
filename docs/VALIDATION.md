@@ -126,6 +126,9 @@ significantly (Lautenschlaeger and Hasse, Fluid Phase Equilib. 482, 38,
 |---|---|---|---|
 | `recordings_are_identical_frame_for_frame` (galaxies) | 40 frames recorded twice | Identical frame hashes and measurement CSV | Identical |
 | `numbers_round_trip_exactly`, `npy_header_is_aligned_and_sized` | CSV numbers and .npy files | Exact round trip; valid .npy | Pass |
+| `ffmpeg_reads_back_every_frame` (`virial::webm`) | 90 VP9 frames from ffmpeg, put in WebM by Virial's writer, decoded again | Same frame hashes as decoding the raw stream; duration 3 s | Identical; 3.0 s |
+| Browser recording, by hand in Chrome on the M1 (`gas?record=1`) | 4096 molecules, 640 × 360, 120 frames, recorded twice; and against a native recording | Reruns bit-identical; native comparison measured | Two browser runs: identical frame hashes, measurements and file size. Against native: kinetic energy 6e-13 apart at step 8, growing to 1e-8 by step 888 (chaotic divergence from shaders compiled by Chrome's Tint instead of naga); total energy within 1e-9 throughout |
+| Browser recording at 1080p, by hand in Chrome | 32,768 molecules, 600 frames at 60 fps | Chrome plays the WebM; seeks | 1920 × 1080, 10.0 s, seeks to 7.5 s; 23.9 MB; recorded in 35 s from a background tab |
 
 ## 0.1.0 release targets
 
