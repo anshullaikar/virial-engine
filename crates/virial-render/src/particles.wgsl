@@ -8,7 +8,8 @@ struct Uniforms {
     viewport: vec2f,
     // Glow: sprite radius in pixels. Spheres: radius used when a position's w is 0
     size: f32,
-    // 0 one colour, 1 two groups split at `split`, 2 speed through a colour map
+    // 0 one colour, 1 two groups split at `split`, 2 speed or 3 the velocity's
+    // w through a colour map
     coloring: u32,
     color_a: vec4f,
     color_b: vec4f,
@@ -45,6 +46,9 @@ fn particle_color(i: u32) -> vec3f {
     if u.coloring == 2u {
         let speed = length(velocities[i].xyz);
         return colormap(u.colormap, (speed - u.value_min) / (u.value_max - u.value_min));
+    }
+    if u.coloring == 3u {
+        return colormap(u.colormap, (velocities[i].w - u.value_min) / (u.value_max - u.value_min));
     }
     return u.color_a.rgb;
 }

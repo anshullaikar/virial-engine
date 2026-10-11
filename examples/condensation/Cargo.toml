@@ -1,0 +1,12 @@
+[package]
+name = "condensation"
+description = "Condensation: a Lennard-Jones fluid cooled below its critical point separates into liquid and vapour"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+virial.workspace = true
+virial-particles.workspace = true
+virial-render.workspace = true

@@ -104,8 +104,9 @@ more steps per second; wasm at most 3 MB gzipped.
 | What | Status |
 |---|---|
 | Quantum motion (`virial-quantum`): 2D time-dependent Schrödinger equation, split-operator with GPU FFTs, absorbing edges, imaginary-time ground states, a detector screen | Done, unreleased. Free packet, coherent state, harmonic ground state, tunnelling (Eckart barrier, within 0.07%) and double-slit dark fringes (within 0.02 wavelengths) all match exact results. Example and video: `double-slit` |
-| Liquid–gas coexistence: rectangular boxes, profiles along z (density, temperature, Irving–Kirkwood pressure tensor), surface tension | Done, unreleased. A slab at T = 0.7 matches NIST's coexistence densities and vapour pressure for the force-shifted potential within 1.8 standard errors, with the normal pressure flat through the interfaces; surface tension of the truncated and shifted potential is 0.6% from Vrabec et al. |
-| Condensation video, then heat conduction (Fourier's law) | Next |
+| Liquid–gas coexistence: rectangular boxes, profiles along z (density, temperature, Irving–Kirkwood pressure tensor), surface tension | Done, unreleased. A slab at T = 0.7 matches NIST's coexistence densities and vapour pressure for the force-shifted potential within 1.7 standard errors, with the normal pressure flat through the interfaces; surface tension of the truncated and shifted potential is 0.6% from Vrabec et al. |
+| Condensation video (`condensation`): cooling schedule, molecules coloured by neighbour count, condensed fraction | Done, unreleased. 60 s at 1080p60, rendered in 4.6 min; the final slab's densities are within 2.4 block standard deviations of NIST's |
+| Heat conduction (Fourier's law) | Next |
 | Browser video export (WebCodecs) | To do |
 
 ## Known gaps

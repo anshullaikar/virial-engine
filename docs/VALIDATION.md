@@ -58,12 +58,17 @@ standard errors over 10 blocks of 20,000 steps. The liquid region is within
 References use the same potential and cutoff, so there are no tail
 corrections to add.
 
+Bulk liquid and vapour are the slabs at least 6σ from every interface, an
+interface being where the density crosses 0.37 (`Profile::phases`, which
+handles any number of liquid slabs); interfaces are the slabs within 3σ.
+
 | Test | Checks | Pass criterion | Measured |
 |---|---|---|---|
+| `phases_of_two_slabs_across_the_boundary` (CPU) | Synthetic profile with two slabs, one across the periodic boundary | Interfaces at the exact crossings; phase counts exact | Exact |
 | `rectangular_box_matches_all_pairs` | 1000 particles in a 9 × 10.5 × 14.25 box, both cutoff styles, against f64 all pairs | Potential, virial and each virial tensor component within 1e-5 | Within 2.2e-6 (potential), 1.6e-7 (virial), 3.4e-7 (tensor) |
 | `profiles_add_up_to_the_whole_box` | 2400 molecules, 120 slabs: slab sums against the whole-box measurement, and two runs | Count exact; kinetic within 1e-6; potential and virial within 1e-5; spread virial within 1e-6 of the pair-by-pair total; reruns bit-identical | Count exact; kinetic 4e-10; potential 9e-10; virial 2e-9; spread virial 2e-8; identical |
-| `force_shifted_slab_coexists_at_nist_densities` | Force-shifted potential against NIST SAT-TMMC (grand-canonical transition-matrix Monte Carlo) at T = 0.7 | Densities and vapour pressure within 3 combined standard errors; normal pressure in liquid, interfaces and vapour each within 3 combined standard errors of the whole box's | Liquid 0.72869 ± 0.00034 (NIST 0.72931, 95% limits ±0.00019; 1.8σ); vapour 0.01953 ± 0.00038 (NIST 0.019511, 0.04σ); normal pressure 0.011876 ± 0.000116 (NIST p_sat 0.011897, 0.2σ); by region 0.01146 ± 0.00029, 0.01192 ± 0.00010, 0.01208 ± 0.00013; temperature 0.69995 |
-| `truncated_shifted_slab_has_published_surface_tension` | Truncated and shifted potential against γ = 2.08 (1 − T/1.0779)^1.21 (Vrabec, Kedia, Fuchs and Hasse, Mol. Phys. 104, 1509, 2006) | Within 5% | 0.5887 ± 0.0064 against 0.5852 (+0.6%); liquid density 0.78675 ± 0.00008, vapour 0.00745 ± 0.00014 |
+| `force_shifted_slab_coexists_at_nist_densities` | Force-shifted potential against NIST SAT-TMMC (grand-canonical transition-matrix Monte Carlo) at T = 0.7 | Densities and vapour pressure within 3 combined standard errors; normal pressure in liquid, interfaces and vapour each within 3 combined standard errors of the whole box's | Liquid 0.72864 ± 0.00038 (NIST 0.72931, 95% limits ±0.00019; 1.7σ); vapour 0.01956 ± 0.00033 (NIST 0.019511, 0.14σ); normal pressure 0.011876 ± 0.000116 (NIST p_sat 0.011897, 0.2σ); by region 0.01154 ± 0.00030, 0.01191 ± 0.00009, 0.01208 ± 0.00013; temperature 0.69995 |
+| `truncated_shifted_slab_has_published_surface_tension` | Truncated and shifted potential against γ = 2.08 (1 − T/1.0779)^1.21 (Vrabec, Kedia, Fuchs and Hasse, Mol. Phys. 104, 1509, 2006) | Within 5% | 0.5887 ± 0.0064 against 0.5852 (+0.6%); liquid density 0.78674 ± 0.00010, vapour 0.00747 ± 0.00013 |
 
 The force-shifted surface tension at T = 0.7 is 0.3328 ± 0.0050 (no published
 value found to compare with). 220,000 steps take about 3.5 minutes on the M1.
@@ -121,4 +126,5 @@ value found to compare with). 220,000 steps take about 3.5 minutes on the M1.
 | Galaxy collision, 16,384 bodies | 60 s (t = 0–72) | 16.1 min | Worst energy drift 8.1e-5, final 2.0e-6 |
 | Gas reaching equilibrium, 32,768 molecules | 40 s (t = 0–38) | 4.5 min | Temperature 2.000 → 2.278 as potential energy converts; worst drift 1.3e-5 |
 | Granular avalanche, 23,460 beads | 30 s (1.8 s real) | 3.3 min | 8.02 J dissipated; at rest, support 38.011 N vs weight 38.025 N (0.04% low, kinetic 6e-4 J) |
+| Condensation, 20,250 molecules | 60 s (t = 0–450) | 4.6 min | Cooled from T = 1.0 to 0.7 (target updated every frame), the fluid separates into a network, two slabs, then one slab straddling the periodic boundary; 92.6% condensed (6+ neighbours within 1.5σ). Final slab, averaged over t = 350–450 (200 samples, one window): liquid 0.72701 (NIST 0.72931), vapour 0.01816 (0.01951), normal pressure 0.01101 (0.01190): 2.1, 1.1 and 2.4 standard deviations of a single 100-unit block of the coexistence test. The slab may have formed after t = 350, so this is a consistency check, not a measurement; the coexistence test is the measurement |
 | Double slit, 1024² grid | 19 s (t = 0–11.4) | 1.1 min | 13.2% of the probability reaches the screen; dark fringes where the path difference predicts. Also saves the screen curve and the final wavefunction as `.npy` |

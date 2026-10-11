@@ -56,6 +56,14 @@ pub enum Coloring {
         min: f32,
         max: f32,
     },
+    /// The velocity buffer's w, a per-particle value the solver writes (for
+    /// Lennard-Jones, neighbours within 1.5 sigma), mapped from `min`..`max`
+    /// through `map`
+    Value {
+        map: Colormap,
+        min: f32,
+        max: f32,
+    },
 }
 
 #[repr(C)]
@@ -319,6 +327,12 @@ impl Particles {
             }
             Coloring::Speed { map, min, max } => {
                 u.coloring = 2;
+                u.colormap = map as u32;
+                u.value_min = min;
+                u.value_max = max.max(min + 1e-12);
+            }
+            Coloring::Value { map, min, max } => {
+                u.coloring = 3;
                 u.colormap = map as u32;
                 u.value_min = min;
                 u.value_max = max.max(min + 1e-12);

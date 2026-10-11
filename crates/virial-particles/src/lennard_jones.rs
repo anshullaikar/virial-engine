@@ -100,6 +100,11 @@ pub struct Measurement {
     pub list_overflow: u32,
     /// Nose-Hoover only: the thermostat's energy Q xi^2 / 2 + g k T eta
     pub thermostat_energy: f64,
+    /// Molecules with at least [`LennardJones::set_condensed_neighbours`]
+    /// neighbours within 1.5 sigma (by default 4: the criterion of ten Wolde
+    /// and Frenkel for a molecule in a dilute vapour belonging to a liquid
+    /// cluster)
+    pub condensed: u32,
 }
 
 impl Measurement {
@@ -139,6 +144,15 @@ pub struct Slab {
     pub virial: [f64; 3],
     /// Potential energy, half of each pair's to each particle's slab
     pub potential: f64,
+}
+
+/// Where a slab sits in a liquid-vapour profile; see [`Profile::phases`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Liquid,
+    Vapour,
+    Interface,
+    Between,
 }
 
 /// Profiles along z, averaged over samples; from
@@ -192,6 +206,70 @@ impl Profile {
         })
     }
 
+    /// Heights where the density crosses `midpoint` (interpolated between
+    /// slab centres, around the periodic z axis): the liquid-vapour
+    /// interfaces, however many slabs of liquid there are.
+    pub fn interfaces(&self, midpoint: f64) -> Vec<f64> {
+        let density = self.density();
+        let n = density.len();
+        let width = self.box_size[2] / n as f64;
+        let mut out = Vec::new();
+        for b in 0..n {
+            let (a, c) = (density[b] - midpoint, density[(b + 1) % n] - midpoint);
+            if (a < 0.0) != (c < 0.0) {
+                let z = self.slabs[b].z + width * a / (a - c);
+                out.push(z.rem_euclid(self.box_size[2]));
+            }
+        }
+        out
+    }
+
+    /// Which phase each slab is in, with interfaces where the density
+    /// crosses `midpoint`: liquid or vapour when at least `margin` from every
+    /// interface, an interface within `margin / 2` of one, and between
+    /// otherwise. All between when there is no interface.
+    pub fn phases(&self, midpoint: f64, margin: f64) -> Vec<Phase> {
+        let lz = self.box_size[2];
+        let interfaces = self.interfaces(midpoint);
+        self.slabs
+            .iter()
+            .zip(self.density())
+            .map(|(s, rho)| {
+                let distance = interfaces
+                    .iter()
+                    .map(|z| {
+                        let d = s.z - z;
+                        (d - lz * (d / lz).round()).abs()
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                if distance.is_infinite() {
+                    Phase::Between
+                } else if distance >= margin {
+                    if rho > midpoint {
+                        Phase::Liquid
+                    } else {
+                        Phase::Vapour
+                    }
+                } else if distance <= margin / 2.0 {
+                    Phase::Interface
+                } else {
+                    Phase::Between
+                }
+            })
+            .collect()
+    }
+
+    /// Mean of a per-slab quantity over the slabs in `phase` (from
+    /// [`Profile::phases`]); None if there are none.
+    pub fn mean_in(&self, values: &[f64], phases: &[Phase], phase: Phase) -> Option<f64> {
+        let (sum, n) = values
+            .iter()
+            .zip(phases)
+            .filter(|(_, p)| **p == phase)
+            .fold((0.0, 0.0), |(s, n), (v, _)| (s + v, n + 1.0));
+        (n > 0.0).then(|| sum / n)
+    }
+
     /// Surface tension of a liquid slab spanning x and y, from the pressure
     /// anisotropy: gamma = L_z / 2 (P_zz - (P_xx + P_yy) / 2), the 2 for the
     /// slab's two interfaces.
@@ -228,7 +306,8 @@ struct Params {
     nh_q: f32,
     profile_bins: u32,
     bin_width: f32,
-    _pad: [u32; 3],
+    near_count: u32,
+    _pad: [u32; 2],
 }
 
 const WORKGROUP: u32 = 256;
@@ -268,6 +347,9 @@ pub struct LennardJones {
     readback: Vec<Readback>,
     /// Nose-Hoover: (g k T, Q); None for other thermostats
     nose_hoover: Option<(f64, f64)>,
+    thermostat: Thermostat,
+    params: Params,
+    params_buffer: wgpu::Buffer,
     energy_scale: f64,
     momentum_scale: f64,
     profile: Option<ProfileSums>,
@@ -426,7 +508,8 @@ impl LennardJones {
             nh_q: nh_q as f32,
             profile_bins,
             bin_width: (box_size[2] / profile_bins.max(1) as f64) as f32,
-            _pad: [0; 3],
+            near_count: 4,
+            _pad: [0; 2],
         };
 
         let usage = wgpu::BufferUsages::STORAGE
@@ -498,7 +581,7 @@ impl LennardJones {
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("lj params"),
             contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         let all: [(u32, &wgpu::Buffer); 9] = [
@@ -672,6 +755,9 @@ impl LennardJones {
             dispatch,
             readback,
             nose_hoover: (thermostat == 2).then_some((nh_gkt, nh_q)),
+            thermostat: settings.thermostat,
+            params,
+            params_buffer,
             energy_scale,
             momentum_scale,
             profile,
@@ -680,6 +766,51 @@ impl LennardJones {
 
     pub fn count(&self) -> u32 {
         self.count
+    }
+
+    /// The thermostat's target temperature now, if there is a thermostat.
+    pub fn target_temperature(&self) -> Option<f64> {
+        match self.thermostat {
+            Thermostat::None => None,
+            Thermostat::Langevin(t) => Some(t.temperature),
+            Thermostat::NoseHoover(t) => Some(t.temperature),
+        }
+    }
+
+    /// Neighbours within 1.5 sigma that make a molecule count as condensed in
+    /// [`Measurement::condensed`]. The default, 4, suits dilute vapours; a
+    /// dense fluid needs more (a molecule at local density rho has about
+    /// 14.1 rho such neighbours).
+    pub fn set_condensed_neighbours(&mut self, neighbours: u32) {
+        self.params.near_count = neighbours;
+        self.queue
+            .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
+    }
+
+    /// Retargets the thermostat, from the next submitted steps on (a cooling
+    /// or heating schedule). Nose-Hoover keeps its period, so its mass scales
+    /// with the temperature; its extended energy is conserved only while the
+    /// target stays put. Panics without a thermostat.
+    pub fn set_temperature(&mut self, temperature: f64) {
+        match &mut self.thermostat {
+            Thermostat::None => panic!("set_temperature needs a thermostat"),
+            Thermostat::Langevin(t) => {
+                t.temperature = temperature;
+                let c1 = (-t.friction * self.dt).exp();
+                self.params.c2 = ((1.0 - c1 * c1) * temperature).sqrt() as f32;
+            }
+            Thermostat::NoseHoover(t) => {
+                t.temperature = temperature;
+                let dof = 3.0 * self.count as f64 - 3.0;
+                let gkt = dof * temperature;
+                let q = gkt * t.period * t.period / (4.0 * std::f64::consts::PI.powi(2));
+                self.params.nh_gkt = gkt as f32;
+                self.params.nh_q = q as f32;
+                self.nose_hoover = Some((gkt, q));
+            }
+        }
+        self.queue
+            .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
     }
 
     /// The box sides actually used: the requested sizes rounded to f32, so
@@ -714,7 +845,9 @@ impl LennardJones {
         self.section(0)
     }
 
-    /// `vec4f` per particle, velocity (hi part) in xyz. For drawing.
+    /// `vec4f` per particle, velocity (hi part) in xyz and, after a
+    /// measurement, the number of neighbours within 1.5 sigma in w. For
+    /// drawing.
     pub fn velocities(&self) -> wgpu::BindingResource<'_> {
         self.section(2)
     }
@@ -890,6 +1023,7 @@ impl LennardJones {
                 momentum: [v[3], v[4], v[5]].map(|p| p / self.momentum_scale),
                 count: self.count,
                 volume: self.box_size.iter().product(),
+                condensed: v[6].round() as u32,
                 list_rebuilds: words[17],
                 list_overflow: words[18],
                 thermostat_energy: self.nose_hoover.map_or(0.0, |(gkt, q)| {
@@ -1098,4 +1232,61 @@ fn lattice_sites(
         }
     }
     particles
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A profile with the given density in each of `bins` slabs of a
+    /// 1 x 1 x `bins` box
+    fn profile(density: &[f64]) -> Profile {
+        Profile {
+            samples: 1,
+            box_size: [1.0, 1.0, density.len() as f64],
+            slabs: density
+                .iter()
+                .enumerate()
+                .map(|(b, &rho)| Slab {
+                    z: b as f64 + 0.5,
+                    particles: rho,
+                    kinetic: [0.0; 3],
+                    virial: [0.0; 3],
+                    potential: 0.0,
+                })
+                .collect(),
+            virial: [0.0; 3],
+        }
+    }
+
+    #[test]
+    fn phases_of_two_slabs_across_the_boundary() {
+        // Liquid (0.7) in z 0..10 and 50..60 (one slab through the periodic
+        // boundary) and 25..40; vapour (0.02) elsewhere
+        let density: Vec<f64> = (0..60)
+            .map(|b| match b {
+                0..10 | 50..60 | 25..40 => 0.7,
+                _ => 0.02,
+            })
+            .collect();
+        let p = profile(&density);
+        let mut interfaces = p.interfaces(0.36);
+        interfaces.sort_by(f64::total_cmp);
+        assert_eq!(interfaces, vec![10.0, 25.0, 40.0, 50.0]);
+        let phases = p.phases(0.36, 4.0);
+        // 4 from every interface: z 54..56 wraps to 6, 29..36, so slab
+        // centres 0.5..5.5 and 54.5..59.5 and 29.5..35.5 are liquid
+        let count = |phase| phases.iter().filter(|&&q| q == phase).count();
+        assert_eq!(count(Phase::Liquid), 6 + 6 + 7);
+        let mean = |phase| p.mean_in(&density, &phases, phase).expect("present");
+        assert!((mean(Phase::Liquid) - 0.7).abs() < 1e-12);
+        assert!((mean(Phase::Vapour) - 0.02).abs() < 1e-12);
+        assert_eq!(count(Phase::Interface), 4 * 4);
+        assert!(
+            profile(&[0.3; 8])
+                .phases(0.36, 4.0)
+                .iter()
+                .all(|&q| q == Phase::Between)
+        );
+    }
 }

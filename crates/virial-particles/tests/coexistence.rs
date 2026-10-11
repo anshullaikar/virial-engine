@@ -7,7 +7,7 @@
 
 use virial_gpu::Compute;
 use virial_particles::lennard_jones::{
-    LennardJones, NoseHoover, Particle, Profile, Settings, Thermostat, lattice_box,
+    LennardJones, NoseHoover, Particle, Phase, Profile, Settings, Thermostat, lattice_box,
 };
 
 fn gpu() -> Option<Compute> {
@@ -208,45 +208,25 @@ struct Block {
     temperature: f64,
 }
 
-/// Mean over the slabs within `range` of `centre` (periodic), from `values`
-fn region(p: &Profile, values: &[f64], centre: f64, range: (f64, f64)) -> f64 {
-    let lz = p.box_size[2];
-    let (mut sum, mut n) = (0.0, 0.0);
-    for (s, v) in p.slabs.iter().zip(values) {
-        let mut d = s.z - centre;
-        d -= lz * (d / lz).round();
-        if d.abs() >= range.0 && d.abs() < range.1 {
-            sum += v;
-            n += 1.0;
-        }
-    }
-    sum / n
-}
+/// Interfaces where the density crosses this, between vapour and liquid
+const MIDPOINT: f64 = 0.37;
+/// Bulk liquid and vapour: at least this far from every interface
+const MARGIN: f64 = 6.0;
 
 fn analyse(p: &Profile) -> Block {
     let density = p.density();
-    let lz = p.box_size[2];
-    // Centre of the slab: the mean angle of the density around the periodic z
-    let (mut c, mut s) = (0.0, 0.0);
-    for (slab, rho) in p.slabs.iter().zip(&density) {
-        let angle = std::f64::consts::TAU * slab.z / lz;
-        c += rho * angle.cos();
-        s += rho * angle.sin();
-    }
-    let centre = s.atan2(c).rem_euclid(std::f64::consts::TAU) * lz / std::f64::consts::TAU;
     let normal: Vec<f64> = p.pressure_tensor().iter().map(|t| t[2]).collect();
-    let half = lz / 2.0;
-    // The liquid reaches about 12 from the centre in these runs
-    let liquid = (0.0, 6.0);
-    let interface = (9.0, 15.0);
-    let vapour = (half - 8.0, half + 1.0);
+    let phases = p.phases(MIDPOINT, MARGIN);
+    assert_eq!(p.interfaces(MIDPOINT).len(), 2, "one slab of liquid");
+    let mean = |values: &[f64], phase| p.mean_in(values, &phases, phase).expect("phase present");
     let kinetic: f64 = p.slabs.iter().flat_map(|s| s.kinetic).sum();
     let particles: f64 = p.slabs.iter().map(|s| s.particles).sum();
     Block {
-        liquid: region(p, &density, centre, liquid),
-        vapour: region(p, &density, centre, vapour),
+        liquid: mean(&density, Phase::Liquid),
+        vapour: mean(&density, Phase::Vapour),
         normal_pressure: p.total_pressure_tensor()[2],
-        normal_by_region: [liquid, interface, vapour].map(|r| region(p, &normal, centre, r)),
+        normal_by_region: [Phase::Liquid, Phase::Interface, Phase::Vapour]
+            .map(|phase| mean(&normal, phase)),
         surface_tension: p.surface_tension(),
         temperature: kinetic / (3.0 * particles),
     }

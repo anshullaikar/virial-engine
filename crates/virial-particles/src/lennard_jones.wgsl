@@ -72,7 +72,8 @@ struct Params {
     // Profiles along z: number of slabs and their width
     profile_bins: u32,
     bin_width: f32,
-    _pad0: u32,
+    // Neighbours within 1.5 sigma that make a molecule count as condensed
+    near_count: u32,
     _pad1: u32,
     _pad2: u32,
 }
@@ -392,11 +393,16 @@ fn nh_scale(@builtin(global_invocation_id) id: vec3u) {
 
 struct Pair {
     // Acceleration (mass 1), this particle's half of the potential energy
-    // and of the virial sum r . F over its pairs
+    // and of the virial sum r . F over its pairs, and its neighbours within
+    // NEAR_R2
     a: vec3f,
     pe: vec2f,
     w: vec2f,
+    near: u32,
 }
+
+// Condensed: at least params.near_count neighbours within 1.5 sigma
+const NEAR_R2: f32 = 2.25;
 
 // Copies every particle into its slot in cell order: slot s gets particle
 // ints[segment + s] (the sorted order)
@@ -487,7 +493,7 @@ fn interactions(i: u32, energies: bool) -> Pair {
     let xl = state[params.segment + i].xyz;
     let seg = params.segment;
     let count = neighbors[i];
-    var out = Pair(vec3f(0.0), vec2f(0.0), vec2f(0.0));
+    var out = Pair(vec3f(0.0), vec2f(0.0), vec2f(0.0), 0u);
     for (var k = 0u; k < count; k++) {
         let j = neighbors[seg * (k + 1u) + i];
         let pj = state[6u * params.segment + j];
@@ -499,6 +505,7 @@ fn interactions(i: u32, energies: bool) -> Pair {
             if energies {
                 out.pe = df_add_f(out.pe, 0.5 * p.y);
                 out.w = df_add_f(out.w, 0.5 * p.x);
+                out.near += select(0u, 1u, r2 < NEAR_R2);
             }
         }
     }
@@ -549,7 +556,9 @@ fn force_kick(@builtin(global_invocation_id) id: vec3u) {
     state[3u * params.segment + i] = vl;
 }
 
-// Slots: 0 kinetic, 1 potential, 2 virial sum, 3-5 momentum
+// Slots: 0 kinetic, 1 potential, 2 virial sum, 3-5 momentum, 6 condensed
+// molecules. Also leaves each molecule's neighbour count within 1.5 sigma in
+// its velocity's w, for drawing.
 @compute @workgroup_size(256)
 fn measure(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_index) li: u32) {
     df_init(params.one);
@@ -560,10 +569,13 @@ fn measure(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_i
     var pe = vec2f(0.0);
     var w = vec2f(0.0);
     var momentum = vec3f(0.0);
+    var condensed = 0.0;
     if i < params.count {
         let p = interactions(i, true);
         pe = p.pe;
         w = p.w;
+        condensed = select(0.0, 1.0, p.near >= params.near_count);
+        state[2u * params.segment + i].w = f32(p.near);
         let vh = state[2u * params.segment + i];
         let vl = state[3u * params.segment + i];
         for (var k = 0u; k < 3u; k++) {
@@ -583,6 +595,7 @@ fn measure(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_i
     for (var k = 0u; k < 3u; k++) {
         fixed_wg_add(3u + k, momentum[k] * params.momentum_scale);
     }
+    fixed_wg_add(6u, condensed);
     workgroupBarrier();
     fixed_wg_flush(li, 0u);
 }

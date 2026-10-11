@@ -22,10 +22,21 @@
   Summed in fixed point over samples: reruns give identical bits.
 - `Profile::surface_tension` from the whole box's pressure anisotropy.
 - `lattice_box`: a starting lattice for a box of any shape.
+- `Profile::phases`, `interfaces` and `mean_in`: liquid, vapour and
+  interface slabs for any number of liquid slabs.
+- `LennardJones::set_temperature`: retarget the thermostat between steps,
+  for cooling or heating schedules.
+- `Measurement::condensed`: molecules with at least a set number of
+  neighbours within 1.5σ (`set_condensed_neighbours`, default 4 as ten Wolde
+  and Frenkel). Each molecule's count is left in its velocity's w.
+- `Coloring::Value` in `virial-render`: colour by that per-particle value.
 - Tested against NIST coexistence data and published surface tension (see
   docs/VALIDATION.md).
 
 ### Examples
+- `condensation`: a fluid cooled from above its critical point separates
+  into liquid and vapour, coloured by local density, ending in a slab whose
+  densities are compared with NIST's.
 - `double-slit`: a wave packet through two slits, drawn as density or phase,
   with the screen building up the interference pattern.
 
