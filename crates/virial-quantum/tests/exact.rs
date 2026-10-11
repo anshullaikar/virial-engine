@@ -242,3 +242,67 @@ fn packet_tunnels_through_a_barrier_at_the_exact_rate() {
         "transmission differs from the exact rate"
     );
 }
+
+#[test]
+fn harmonic_levels_from_the_autocorrelation() {
+    let Some(gpu) = gpu() else { return };
+    // 2D harmonic well, omega = 0.2: levels at omega (n + 1), n = nx + ny
+    let omega = 0.2f64;
+    let settings = Settings {
+        n: 256,
+        length: 80.0,
+        dt: 0.01,
+        time: Time::Real,
+        absorber: None,
+        detector: None,
+    };
+    // A coherent state displaced by 3: mean n = omega x0^2 / 2 = 0.9
+    let width = (1.0 / (2.0 * omega)).sqrt();
+    let mut wave = Wave::new(
+        &gpu.device,
+        &gpu.queue,
+        settings,
+        gaussian([3.0, 0.0], [0.0, 0.0], width),
+        |x, y| 0.5 * omega * omega * (x * x + y * y),
+    );
+    let (every, samples) = (5u32, 4000u32);
+    wave.record_autocorrelation(samples);
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    wave.sample_autocorrelation(&mut encoder);
+    gpu.queue.submit([encoder.finish()]);
+    for _ in 1..samples {
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        wave.step(&mut encoder, every);
+        wave.sample_autocorrelation(&mut encoder);
+        gpu.queue.submit([encoder.finish()]);
+    }
+    let c = wave.read_autocorrelation();
+    let dt = 0.01 * every as f64;
+    let tau = 0.24 * dt * samples as f64;
+    let levels = virial_quantum::energy_levels(&c, dt, tau, 0.05, 1.5, 1e-3);
+    // A coherent state occupies level n with Poisson weight
+    // e^-m m^n / n!, mean m = 0.9
+    let mean = omega * 3.0f64.powi(2) / 2.0;
+    let poisson = |n: f64| (-mean).exp() * mean.powf(n) / (1..=n as u32).product::<u32>() as f64;
+    let (mut worst, mut worst_weight) = (0.0f64, 0.0f64);
+    for (e, w) in &levels {
+        let n = (e / omega - 1.0).round();
+        let error = e / omega - (n + 1.0);
+        worst = worst.max(error.abs());
+        worst_weight = worst_weight.max((w - poisson(n)).abs());
+        println!(
+            "E = {e:.10} = omega ({:.8}), level n = {n}, weight {w:.5} (Poisson {:.5})",
+            e / omega,
+            poisson(n)
+        );
+    }
+    println!(
+        "{} levels from C(t) over t = 0..{:.0}, window tau {tau:.0}; worst error {worst:.2e} \
+         in units of omega; weights within {worst_weight:.1e} of Poisson",
+        levels.len(),
+        dt * samples as f64
+    );
+    assert!(levels.len() >= 4, "too few levels found");
+    assert!(worst < 1e-4, "levels not at omega (n + 1)");
+    assert!(worst_weight < 1e-3, "weights not Poisson");
+}

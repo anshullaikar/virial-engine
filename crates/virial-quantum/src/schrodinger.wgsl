@@ -6,9 +6,12 @@
 // f64 on the CPU. In imaginary time the factors are real decays instead and
 // the wavefunction is renormalised after each step.
 //
-// The FFT is radix-2 Stockham (out of place, natural order out), one
-// dispatch per pass, along x then y. Twiddles come from a table computed in
-// f64, not from GPU sin/cos. `psi` holds three N^2 regions: the wavefunction
+// The FFT is radix-2, along x then y, with twiddles from a table computed in
+// f64, not from GPU sin/cos. Up to N = ROW_MAX, each workgroup transforms a
+// whole row (or column) in workgroup memory: one dispatch per axis
+// (fft_rows). Larger grids use Stockham passes (out of place, natural order
+// out), one dispatch per pass (fft_pass). Both do the same butterflies on the
+// same values, so they give the same bits. `psi` holds three N^2 regions: the wavefunction
 // (A), FFT scratch (B) and a copy for measurements (C). A 2D transform has
 // 2 log2 N passes, an even number, so it always ends where it started.
 //
@@ -92,6 +95,88 @@ fn fft_pass(@builtin(global_invocation_id) id: vec3u) {
     let j = 2u * i - k;
     psi[pass_info.dst + base + j * stride] = u0 + u1;
     psi[pass_info.dst + base + (j + p) * stride] = u0 - u1;
+}
+
+// One transform of a whole row (axis 0) or column (axis 1) per workgroup, in
+// place: load in bit-reversed order, then log2 N decimation-in-time stages in
+// workgroup memory. Stage p (sub-transforms of length 2p) combines u0 and
+// u1 w^k, k < p, exactly as fft_pass does.
+const ROW_MAX: u32 = 1024u;
+var<workgroup> row: array<vec2f, 1024>;
+
+@compute @workgroup_size(256)
+fn fft_rows(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) li: u32) {
+    let n = grid.n;
+    let halfn = n / 2u;
+    let r = group.x;
+    var base = r * n;
+    var stride = 1u;
+    if pass_info.axis == 1u {
+        base = r;
+        stride = n;
+    }
+    let shift = 32u - grid.log2n;
+    for (var e = li; e < n; e += 256u) {
+        row[reverseBits(e) >> shift] = psi[pass_info.src + base + e * stride];
+    }
+    workgroupBarrier();
+    for (var s = 0u; s < grid.log2n; s++) {
+        let p = 1u << s;
+        for (var b = li; b < halfn; b += 256u) {
+            let k = b & (p - 1u);
+            let i0 = ((b >> s) << (s + 1u)) + k;
+            var w = twiddles[k * (halfn / p)];
+            if pass_info.inverse == 1u {
+                w.y = -w.y;
+            }
+            let u0 = row[i0];
+            let u1 = cmul(row[i0 + p], w);
+            row[i0] = u0 + u1;
+            row[i0 + p] = u0 - u1;
+        }
+        workgroupBarrier();
+    }
+    for (var e = li; e < n; e += 256u) {
+        psi[pass_info.dst + base + e * stride] = row[e];
+    }
+}
+
+// ---- Autocorrelation C(t) = <psi(0)|psi(t)>, for energy spectra ----
+//
+// psi(0) lives in region D. Bound with a series buffer in place of the
+// accumulators: slot 0 counts samples, sample k goes to slots 1 + 2k (re)
+// and 2 + 2k (im), each a sum of conj(psi0) psi dA (scaled as the norm).
+
+@compute @workgroup_size(256)
+fn remember_initial(@builtin(global_invocation_id) id: vec3u) {
+    if id.x < grid.cells {
+        psi[3u * grid.cells + id.x] = psi[id.x];
+    }
+}
+
+@compute @workgroup_size(256)
+fn overlap(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_index) li: u32) {
+    fixed_wg_clear(li);
+    workgroupBarrier();
+    if id.x < grid.cells {
+        let a = psi[3u * grid.cells + id.x];
+        let b = psi[id.x];
+        let w = grid.dx * grid.dx * grid.scale_norm;
+        fixed_wg_add(0u, (a.x * b.x + a.y * b.y) * w);
+        fixed_wg_add(1u, (a.x * b.y - a.y * b.x) * w);
+    }
+    workgroupBarrier();
+    if li < 2u {
+        let sample = atomicLoad(&virial_fixed[0]);
+        let low = atomicLoad(&virial_fixed_wg[2u * li]);
+        let high = atomicLoad(&virial_fixed_wg[2u * li + 1u]);
+        fixed_add_parts(1u + 2u * sample + li, vec2u(low, high));
+    }
+}
+
+@compute @workgroup_size(1)
+fn overlap_advance() {
+    atomicAdd(&virial_fixed[0], 1u);
 }
 
 // psi *= half-step potential factor (region A)

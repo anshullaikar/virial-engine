@@ -116,6 +116,9 @@ significantly (Lautenschlaeger and Hasse, Fluid Phase Equilib. 482, 38,
 | `packet_tunnels_through_a_barrier_at_the_exact_rate` | Packet against V₀ sech²(x/a), absorbing edges | Transmitted probability within 0.5% of the exact (Landau–Lifshitz) rate, averaged over the packet's energies | 0.54915 vs 0.54950 (−0.065%) |
 | `detector_counts_the_probability_that_crosses_it` | Screen current integrated over time vs change in probability beyond it | Within 2e-4 | 0.982967 vs 0.982862 (1.0e-4) |
 | `double_slit_fringes_sit_where_the_path_difference_says` | Packet through two slits (1 wide, 4 apart, λ = 1.257), 1024² grid, screen at x = 20 | Dark fringes within 0.05 wavelengths of where the path difference from the slits is a half-integer number of wavelengths (solved exactly, no small-angle approximation) | Off by −0.019 and −0.014 wavelengths. Bright fringes are pulled toward the centre by the single-slit envelope, as expected (printed, not tested) |
+| `harmonic_levels_from_the_autocorrelation` | Coherent state (displaced 3) in a 2D harmonic well, ω = 0.2, 256² grid; C(t) = ⟨ψ(0)\|ψ(t)⟩ over t = 0–200, spectrum with a Gaussian window (τ = 48) | At least 4 levels, each within 1e-4 ω of ω(n + 1); weights within 1e-3 of the Poisson occupation e⁻ᵐmⁿ/n!, m = 0.9 | 6 levels (n = 0–5), worst 5.1e-6 ω; weights within 7.6e-5 of Poisson |
+| `row_and_pass_ffts_give_the_same_bits` | 50 steps with a harmonic well and absorbing edges, whole-row FFTs against Stockham passes, 64², 256², 1024² | Bit-identical wavefunctions | Identical |
+| `step_times` (run by hand) | Step time, M1 Air | — | 512²: 2.32 ms (passes) → 1.17 ms (rows); 1024²: 15.4 ms → 4.48 ms |
 
 ## Recording (`virial`)
 

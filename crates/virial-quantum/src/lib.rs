@@ -103,6 +103,19 @@ struct Grid {
 
 /// Dynamic uniform offsets must be multiples of 256 bytes
 const PASS_STRIDE: u64 = 256;
+/// Largest grid side whose rows fit in workgroup memory (ROW_MAX in the shader)
+const ROW_MAX: u32 = 1024;
+
+/// How the 2D FFTs run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fft {
+    /// A whole row or column per workgroup, in workgroup memory: two
+    /// dispatches per transform. The default up to n = 1024.
+    Rows,
+    /// One radix-2 Stockham pass over the grid per dispatch, 2 log2 n of
+    /// them per transform. Any n; the default above 1024.
+    Passes,
+}
 const WORKGROUP: u32 = 256;
 const SLOTS: u64 = 8;
 const RING: usize = 3;
@@ -164,6 +177,64 @@ struct Readback {
 
 /// A wavefunction on the GPU.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// Everything bound alongside the wavefunction, accumulators and detector
+struct Buffers {
+    layout: wgpu::BindGroupLayout,
+    passes: wgpu::Buffer,
+    grid: wgpu::Buffer,
+    twiddles: wgpu::Buffer,
+    factors: wgpu::Buffer,
+    fields: wgpu::Buffer,
+}
+
+impl Buffers {
+    /// The bind group, with `fixed` as the accumulators (binding 6)
+    fn group(
+        &self,
+        device: &wgpu::Device,
+        psi: &wgpu::Buffer,
+        fixed: &wgpu::Buffer,
+        detector: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        fn whole(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: buffer.as_entire_binding(),
+            }
+        }
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wave"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.passes,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(size_of::<Pass>() as u64),
+                    }),
+                },
+                whole(1, &self.grid),
+                whole(2, psi),
+                whole(3, &self.twiddles),
+                whole(4, &self.factors),
+                whole(5, &self.fields),
+                whole(6, fixed),
+                whole(7, detector),
+            ],
+        })
+    }
+}
+
+/// A recorded autocorrelation series
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+struct Series {
+    capacity: u32,
+    buffer: wgpu::Buffer,
+    group: wgpu::BindGroup,
+    samples: u32,
+}
+
 pub struct Wave {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -177,6 +248,9 @@ pub struct Wave {
     pipelines: Vec<(&'static str, wgpu::ComputePipeline)>,
     readback: Vec<Readback>,
     scales: [f64; 5],
+    fft: Fft,
+    buffers: Buffers,
+    autocorrelation: Option<Series>,
 }
 
 impl Wave {
@@ -218,7 +292,9 @@ impl Wave {
             }
         };
 
-        let mut psi0 = vec![[0.0f32; 2]; 3 * cells];
+        // Regions: wavefunction, FFT scratch, measurement copy, psi(0) for
+        // the autocorrelation
+        let mut psi0 = vec![[0.0f32; 2]; 4 * cells];
         let mut factors = vec![[0.0f32; 4]; cells];
         let mut fields = vec![[0.0f32; 4]; cells];
         let mut v_max = 0.0f64;
@@ -321,6 +397,22 @@ impl Wave {
                 passes.extend(bytes);
             }
         }
+        // Whole-row transforms, in place: the same three sets, x then y
+        for (inverse, start) in [(0, 0u32), (1, 0), (0, 2 * cells as u32)] {
+            for axis in 0..2 {
+                let pass = Pass {
+                    stage: 0,
+                    axis,
+                    inverse,
+                    src: start,
+                    dst: start,
+                    _pad: [0; 3],
+                };
+                let mut bytes = bytemuck::bytes_of(&pass).to_vec();
+                bytes.resize(PASS_STRIDE as usize, 0);
+                passes.extend(bytes);
+            }
+        }
 
         let init = |label: &str, contents: &[u8], usage| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -392,51 +484,18 @@ impl Wave {
                 entry(7, rw, false),
             ],
         });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("wave"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &pass_buffer,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(size_of::<Pass>() as u64),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: grid_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: psi.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: twiddles.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: factors.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: fields.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: fixed.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: detector.as_entire_binding(),
-                },
-            ],
-        });
+        let buffers = Buffers {
+            layout,
+            passes: pass_buffer,
+            grid: grid_buffer,
+            twiddles,
+            factors,
+            fields,
+        };
+        let group = buffers.group(device, &psi, &fixed, &detector);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wave"),
-            bind_group_layouts: &[Some(&layout)],
+            bind_group_layouts: &[Some(&buffers.layout)],
             immediate_size: 0,
         });
         let source = format!("{}\n{WGSL_FIXED}", include_str!("schrodinger.wgsl"));
@@ -446,6 +505,10 @@ impl Wave {
         });
         let pipelines = [
             "fft_pass",
+            "fft_rows",
+            "remember_initial",
+            "overlap",
+            "overlap_advance",
             "potential_half",
             "kinetic",
             "copy_to_measure",
@@ -496,6 +559,13 @@ impl Wave {
             pipelines,
             readback,
             scales,
+            fft: if settings.n <= ROW_MAX {
+                Fft::Rows
+            } else {
+                Fft::Passes
+            },
+            buffers,
+            autocorrelation: None,
         }
     }
 
@@ -556,9 +626,109 @@ impl Wave {
         pass.dispatch_workgroups(groups, 1, 1);
     }
 
+    /// Remembers the wavefunction now as psi(0) and makes room to record
+    /// `capacity` samples of the autocorrelation C(t) = <psi(0)|psi(t)> (see
+    /// [`Wave::sample_autocorrelation`] and [`energy_levels`]).
+    pub fn record_autocorrelation(&mut self, capacity: u32) {
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("autocorrelation series"),
+            size: 8 * (1 + 2 * capacity as u64),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let group = self
+            .buffers
+            .group(&self.device, &self.psi, &buffer, &self.detector);
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            self.run(
+                &mut pass,
+                "remember_initial",
+                self.cells().div_ceil(WORKGROUP),
+            );
+        }
+        self.queue.submit([encoder.finish()]);
+        self.autocorrelation = Some(Series {
+            capacity,
+            buffer,
+            group,
+            samples: 0,
+        });
+    }
+
+    /// Records C(t) = <psi(0)|psi(t)> now, the next sample in the series.
+    pub fn sample_autocorrelation(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let groups = self.cells().div_ceil(WORKGROUP);
+        let series = self
+            .autocorrelation
+            .as_mut()
+            .expect("record_autocorrelation first");
+        assert!(
+            series.samples < series.capacity,
+            "autocorrelation series full"
+        );
+        series.samples += 1;
+        let series = self.autocorrelation.as_ref().expect("recording");
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_bind_group(0, &series.group, &[0]);
+        pass.set_pipeline(self.pipeline("overlap"));
+        pass.dispatch_workgroups(groups, 1, 1);
+        pass.set_pipeline(self.pipeline("overlap_advance"));
+        pass.dispatch_workgroups(1, 1, 1);
+    }
+
+    /// The autocorrelation samples so far (re, im). Native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn read_autocorrelation(&self) -> Vec<[f64; 2]> {
+        let series = self
+            .autocorrelation
+            .as_ref()
+            .expect("record_autocorrelation first");
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("read autocorrelation"),
+            size: series.buffer.size(),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(&series.buffer, 0, &staging, 0, series.buffer.size());
+        self.queue.submit([encoder.finish()]);
+        staging
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.expect("read back"));
+        self.wait();
+        let words: Vec<u32> =
+            bytemuck::cast_slice(&staging.slice(..).get_mapped_range().expect("mapped")).to_vec();
+        staging.unmap();
+        let values = fixed::decode(&words);
+        (0..series.samples as usize)
+            .map(|k| [1, 2].map(|q| values[2 * k + q] / self.scales[0]))
+            .collect()
+    }
+
+    /// How 2D FFTs run; both give the same bits.
+    pub fn set_fft(&mut self, fft: Fft) {
+        assert!(
+            fft == Fft::Passes || self.settings.n <= ROW_MAX,
+            "whole-row FFTs need n <= {ROW_MAX}"
+        );
+        self.fft = fft;
+    }
+
     /// One 2D FFT: `set` 0 forward from the wavefunction, 1 inverse, 2
     /// forward from the measurement copy
     fn fft(&self, pass: &mut wgpu::ComputePass<'_>, set: u32) {
+        if self.fft == Fft::Rows {
+            pass.set_pipeline(self.pipeline("fft_rows"));
+            for axis in 0..2 {
+                let index = 3 * 2 * self.log2n + 2 * set + axis;
+                let offset = (index as u64 * PASS_STRIDE) as u32;
+                pass.set_bind_group(0, &self.group, &[offset]);
+                pass.dispatch_workgroups(self.settings.n, 1, 1);
+            }
+            return;
+        }
         let groups = (self.cells() / 2).div_ceil(WORKGROUP);
         pass.set_pipeline(self.pipeline("fft_pass"));
         for p in 0..2 * self.log2n {
@@ -767,4 +937,74 @@ pub fn gaussian(
         let phase = momentum[0] * x + momentum[1] * y;
         [amplitude * phase.cos(), amplitude * phase.sin()]
     }
+}
+
+/// The spectrum of an autocorrelation series `c` (samples `dt` apart from
+/// t = 0) at `energy`: S(E) = 2 Re of the integral over t >= 0 of
+/// C(t) e^(iEt) e^(-(t/tau)^2), by the trapezoid rule. For
+/// C(t) = sum |c_n|^2 e^(-i E_n t) it peaks at each E_n with height
+/// |c_n|^2 tau sqrt(pi) and width about 4 / tau. Keep `tau` below a quarter
+/// of the recorded time so the window has died away by the end.
+pub fn spectrum(c: &[[f64; 2]], dt: f64, tau: f64, energy: f64) -> f64 {
+    let mut sum = 0.5 * c[0][0];
+    for (k, ck) in c.iter().enumerate().skip(1) {
+        let t = k as f64 * dt;
+        let (s, co) = (energy * t).sin_cos();
+        sum += (ck[0] * co - ck[1] * s) * (-(t / tau).powi(2)).exp();
+    }
+    2.0 * dt * sum
+}
+
+/// Energy levels from an autocorrelation series: the peaks of [`spectrum`]
+/// between `from` and `to` whose weight |c_n|^2 is at least `min_weight`,
+/// each located to about 1e-10 by golden-section search. Returns (energy,
+/// weight) pairs, lowest first.
+pub fn energy_levels(
+    c: &[[f64; 2]],
+    dt: f64,
+    tau: f64,
+    from: f64,
+    to: f64,
+    min_weight: f64,
+) -> Vec<(f64, f64)> {
+    let s = |e: f64| spectrum(c, dt, tau, e);
+    let height = tau * PI.sqrt();
+    // Eight samples across each peak's width
+    let step = 0.5 / tau;
+    let grid: Vec<f64> = (0..=((to - from) / step) as usize)
+        .map(|k| from + k as f64 * step)
+        .collect();
+    let values: Vec<f64> = grid.iter().map(|&e| s(e)).collect();
+    let mut levels = Vec::new();
+    for k in 1..grid.len().saturating_sub(1) {
+        if values[k] <= values[k - 1] || values[k] < values[k + 1] {
+            continue;
+        }
+        if values[k] / height < min_weight {
+            continue;
+        }
+        // Golden-section search for the maximum in [e - step, e + step]
+        let (mut a, mut b) = (grid[k] - step, grid[k] + step);
+        let g = (5f64.sqrt() - 1.0) / 2.0;
+        let (mut x1, mut x2) = (b - g * (b - a), a + g * (b - a));
+        let (mut f1, mut f2) = (s(x1), s(x2));
+        while b - a > 1e-10 {
+            if f1 > f2 {
+                b = x2;
+                x2 = x1;
+                f2 = f1;
+                x1 = b - g * (b - a);
+                f1 = s(x1);
+            } else {
+                a = x1;
+                x1 = x2;
+                f1 = f2;
+                x2 = a + g * (b - a);
+                f2 = s(x2);
+            }
+        }
+        let e = 0.5 * (a + b);
+        levels.push((e, s(e) / height));
+    }
+    levels
 }

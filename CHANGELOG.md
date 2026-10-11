@@ -44,6 +44,14 @@
 - Tested: Fourier's law and Green–Kubo conductivities agree (see
   docs/VALIDATION.md).
 
+### Quantum (`virial-quantum`)
+- Whole-row FFTs in workgroup memory (`Fft::Rows`, the default up to
+  n = 1024): a 1024² step from 15.4 to 4.5 ms on an M1 Air, bit-identical to
+  the Stockham passes (`Fft::Passes`, still used above 1024).
+- Energy spectra: `record_autocorrelation` / `sample_autocorrelation` /
+  `read_autocorrelation` record C(t) = ⟨ψ(0)|ψ(t)⟩; `spectrum` and
+  `energy_levels` find the levels and their weights.
+
 ### Examples
 - `heat`: heat flowing from a hot slab to a cold one through a liquid,
   coloured by local temperature, settling into a straight profile; the

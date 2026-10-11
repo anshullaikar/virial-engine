@@ -107,8 +107,8 @@ more steps per second; wasm at most 3 MB gzipped.
 | Liquid–gas coexistence: rectangular boxes, profiles along z (density, temperature, Irving–Kirkwood pressure tensor), surface tension | Done, unreleased. A slab at T = 0.7 matches NIST's coexistence densities and vapour pressure for the force-shifted potential within 1.7 standard errors, with the normal pressure flat through the interfaces; surface tension of the truncated and shifted potential is 0.6% from Vrabec et al. |
 | Condensation video (`condensation`): cooling schedule, molecules coloured by neighbour count, condensed fraction | Done, unreleased. 60 s at 1080p60, rendered in 4.6 min; the final slab's densities are within 2.4 block standard deviations of NIST's |
 | Heat conduction (`set_heat_exchange` with eHEX, heat current for Green–Kubo, `heat` example) | Done, unreleased. Fourier's law 8.56 ± 0.66 and Green–Kubo 7.65 ± 0.53 agree within 1.1 combined standard errors (density 0.8442, T about 1.3); energy bookkeeping closes to 9e-5 of the heat moved |
-| Faster quantum FFT (radix-4 or shared-memory passes) | Next |
-| Browser video export (WebCodecs) | To do |
+| Faster quantum FFT and energy spectra (`Fft::Rows`, `record_autocorrelation`, `energy_levels`) | Done, unreleased. 1024² step 15.4 → 4.5 ms, bit-identical; harmonic levels at ω(n + 1) to 5e-6 with Poisson weights to 8e-5 |
+| Browser video export (WebCodecs) | Next |
 
 ## Known gaps
 
@@ -145,10 +145,11 @@ more steps per second; wasm at most 3 MB gzipped.
   each, about 3.5 minutes alone and 10.7 minutes for the two side by side.
   `scripts/check.sh` now takes about 18 minutes on an M1 Air.
 - **Safari** is untested.
-- **The quantum FFT is bandwidth-bound**: a 1024² step takes 15 ms (512²: 2.2 ms)
-  on an M1 Air (40 radix-2 passes over the whole grid). Radix-4 or
-  shared-memory passes would cut the passes 2–4x. The browser example
-  defaults to 512².
+- **The quantum FFT is bandwidth-bound**: transforming whole rows in
+  workgroup memory (4 sweeps of the grid per step instead of 40) brought a
+  1024² step from 15.4 to 4.5 ms on an M1 Air (512²: 2.3 to 1.2 ms), bit for
+  bit the same. Above 1024² rows don't fit in workgroup memory and the old
+  passes run. The browser example still defaults to 512².
 - **Quantum probability leaks about 5e-8 per step** through f32 rounding in
   the FFTs, at any grid size (measured; tested as a bound). Over 10,000 steps
   that is 5e-4. Fixing it needs double-float FFTs, at roughly 4x the cost.
