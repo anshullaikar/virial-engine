@@ -66,7 +66,7 @@ When two of these conflict, the higher one wins.
 | Topic | Decision |
 |---|---|
 | Name | **Virial**, after the virial theorem |
-| Rust crates | `virial` and `virial-*` on crates.io (0.1.0 released 2026-10-10) |
+| Rust crates | `virial` and `virial-*` on crates.io (0.1.0 released 2026-10-10, 0.2.0 on 2026-10-11) |
 | npm | `@virial/engine` (the unscoped `virial` was refused as too similar to `vorpal`) |
 | Repository | github.com/virial-engine/virial-engine (public) |
 | Licence | MIT OR Apache-2.0 |
@@ -109,7 +109,7 @@ more steps per second; wasm at most 3 MB gzipped.
 | Heat conduction (`set_heat_exchange` with eHEX, heat current for Green–Kubo, `heat` example) | Done, unreleased. Fourier's law 8.56 ± 0.66 and Green–Kubo 7.65 ± 0.53 agree within 1.1 combined standard errors (density 0.8442, T about 1.3); energy bookkeeping closes to 9e-5 of the heat moved |
 | Faster quantum FFT and energy spectra (`Fft::Rows`, `record_autocorrelation`, `energy_levels`) | Done, unreleased. 1024² step 15.4 → 4.5 ms, bit-identical; harmonic levels at ω(n + 1) to 5e-6 with Poisson weights to 8e-5 |
 | Browser video export (`?record=1`: WebCodecs VP9 into a WebM written in Rust) | Done, unreleased. Browser reruns are bit-identical; browser and native agree to 6e-13 at the start and diverge chaotically after (different shader compilers); 1080p60 plays and seeks in Chrome |
-| Safari (tested by hand), then release 0.2.0 | Next |
+| Release 0.2.0 | Done 2026-10-11: crates, tag and GitHub release with the double-slit, condensation and heat videos. Safari still untested |
 
 ## Known gaps
 

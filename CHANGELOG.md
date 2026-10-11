@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-10-11)
+
+Thermodynamics (liquid–vapour coexistence, heat conduction), quantum motion,
+and recording in the browser. Every result is in docs/VALIDATION.md.
 
 ### Quantum motion (`virial-quantum`, new)
 - The 2D time-dependent Schrödinger equation (ħ = m = 1) by Strang

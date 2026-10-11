@@ -9,7 +9,7 @@ Named after the virial theorem, which links a system's kinetic and potential
 energy. The same theorem describes galaxies settling into equilibrium and gives
 a gas its pressure.
 
-Status: 0.1.0, the first feature-complete release (see [CHANGELOG.md](CHANGELOG.md)). Virial runs scenes in a window or a browser
+Status: 0.2.0, adding liquid–vapour coexistence, heat conduction, quantum motion and recording in the browser (see [CHANGELOG.md](CHANGELOG.md)). Virial runs scenes in a window or a browser
 canvas through WebGPU (browser) or Metal / Vulkan / DX12 (native), with mouse
 and keyboard input, a stats panel and GPU pass timings.
 
@@ -34,6 +34,8 @@ python3 scripts/serve.py   # then open http://127.0.0.1:5173/examples/attractors
 | `galaxies` | Two disk galaxies colliding under exact gravity, with energy readouts |
 | `gas` | A gas reaching equilibrium: speeds relax onto the Maxwell–Boltzmann curve |
 | `avalanche` | 23,000 glass beads pouring down a slope, in SI units |
+| `condensation` | A fluid cooled below its critical point separates into liquid and vapour |
+| `heat` | Heat flowing through a liquid from a hot slab to a cold one, coloured by local temperature |
 | `double-slit` | A quantum wave packet through two slits, from the Schrödinger equation; a screen builds up the interference pattern |
 | `attractors` | Up to 16M particles pulled towards the mouse; a speed baseline |
 | `triangle` | One binary drawing in the browser and natively |
@@ -103,6 +105,9 @@ numbers. Validation on an M1:
 | Dilute gas (density 0.01, T = 2) | PV/NkT = 0.99244 ± 0.00012: within 0.76% of the ideal gas law, and within 1.3 standard errors of the virial expansion 1 + B₂ρ = 0.99228 |
 | Gas starting with every particle at the same speed, no thermostat | Kolmogorov–Smirnov distance from Maxwell–Boltzmann 0.61 → 0.003 after 60 time units, energy drift 4e-5 |
 | Thermostatted reruns | Bit-identical |
+| Liquid–vapour coexistence, T = 0.7 (force-shifted cutoff 2.5) | Liquid 0.72864 ± 0.00038, vapour 0.01956 ± 0.00033, vapour pressure 0.011876 ± 0.000116, against NIST's 0.72931, 0.01951 and 0.01190; normal pressure flat through the interfaces |
+| Surface tension, T = 0.7 (truncated and shifted) | 0.5887 ± 0.0064, against 0.5852 from Vrabec et al. (+0.6%) |
+| Thermal conductivity, density 0.8442 | Fourier's law (eHEX heat exchange) 8.56 ± 0.66 and Green–Kubo 7.65 ± 0.53 agree within 1.1 combined standard errors; energy bookkeeping closes to 9e-5 of the heat moved |
 
 ## Granular materials
 
@@ -134,6 +139,8 @@ and record the probability current through a screen. Validation on an M1:
 | Ground state by imaginary time | Energy 1.0000000 (exact 1) |
 | Tunnelling through a sech² barrier | Transmitted 0.54915, exact 0.54950 (−0.065%) |
 | Double slit | Dark fringes within 0.02 wavelengths of the path-difference rule |
+| Energy levels of a 2D harmonic well, from the autocorrelation ⟨ψ(0)\|ψ(t)⟩ | Six levels at ω(n + 1) to 5e-6 ω; weights match the Poisson occupation to 8e-5 |
+| Speed | A 1024² step in 4.5 ms (whole-row FFTs in workgroup memory), bit-identical to the 15.4 ms radix-2 passes |
 
 ## Videos and data
 
